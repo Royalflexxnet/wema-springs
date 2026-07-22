@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Meter{% endblock %}
+{% block content %}
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('meter_readings') }}">Meter</a></nav></div>
+<div class="col-md-10 py-4"><h2>Meter</h2><button class="btn btn-gold mb-4" data-bs-toggle="modal" data-bs-target="#addReading">+ Add</button>
+<table class="table"><thead><tr><th>Date</th><th>Meter #</th><th>Reading</th><th>Liters</th></tr></thead><tbody>{% for r in readings %}<tr><td>{{ r.reading_date.strftime('%Y-%m-%d') }}</td><td>{{ r.meter_number }}</td><td>{{ r.reading_value }}</td><td>{{ r.liters_produced }} L</td></tr>{% endfor %}</tbody></table></div></div></div>
+{% endblock %}

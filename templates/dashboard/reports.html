@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+{% block content %}
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('reports') }}">Reports</a></nav></div>
+<div class="col-md-10 py-4"><h2>Reports</h2>
+<div class="card mb-4"><div class="card-body"><form method="GET" class="row"><div class="col-md-4"><label>Start</label><input type="date" name="start_date" class="form-control" value="{{ start_date }}"></div><div class="col-md-4"><label>End</label><input type="date" name="end_date" class="form-control" value="{{ end_date }}"></div><div class="col-md-4"><label>&nbsp;</label><button type="submit" class="btn btn-primary w-100">Generate</button></div></form></div></div>
+<div class="row mb-4"><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Online</h6><div class="stats-number">KES {{ "%.0f"|format(online_sales) }}</div></div></div></div><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Walk-in</h6><div class="stats-number">KES {{ "%.0f"|format(total_walkins) }}</div></div></div></div><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Total</h6><div class="stats-number">KES {{ "%.0f"|format(total_revenue) }}</div></div></div></div><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Orders</h6><div class="stats-number">{{ total_orders }}</div></div></div></div></div>
+<a href="{{ url_for('reports_pdf') }}" class="btn btn-danger"><i class="bi bi-file-pdf"></i> PDF</a></div></div></div>
+{% endblock %}

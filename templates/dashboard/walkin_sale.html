@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Walk-in Sale{% endblock %}
+{% block content %}
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('walkin_sale') }}">Walk-in</a></nav></div>
+<div class="col-md-10 py-4"><div class="row"><div class="col-md-5"><div class="card"><div class="card-header" style="background:#059669;"><h5>Record Sale</h5></div><div class="card-body"><form action="{{ url_for('record_walkin_sale') }}" method="POST">
+<div class="mb-3"><label>Product</label><select name="product_id" class="form-control" required>{% for p in products %}<option value="{{ p.id }}">[{{ p.category.upper() }}] {{ p.name }} - KES {{ "%.2f"|format(p.price) }}</option>{% endfor %}</select></div>
+<div class="mb-3"><label>Qty</label><input type="number" name="quantity" class="form-control" value="1" required></div>
+<div class="mb-3"><label>Payment</label><select name="payment_method" class="form-control"><option value="cash">Cash</option><option value="mpesa">M-Pesa</option></select></div>
+<div class="mb-3"><label>M-Pesa Code</label><input type="text" name="mpesa_code" class="form-control"></div>
+<div class="mb-3"><label>Customer</label><input type="text" name="customer_name" class="form-control" value="Walk-in"></div>
+<button type="submit" class="btn btn-success w-100">Record Sale</button></form></div></div></div>
+<div class="col-md-7"><div class="card"><div class="card-header"><h5>Today</h5></div><div class="card-body"><table class="table table-sm">{% for s in today_sales %}<tr><td>{{ s.sale_date.strftime('%H:%M') }}</td><td>{{ s.product.name }}</td><td>KES {{ "%.2f"|format(s.total_amount) }}</td></tr>{% endfor %}</table></div></div></div></div></div></div></div>
+{% endblock %}

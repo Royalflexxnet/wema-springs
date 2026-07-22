@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}Customers{% endblock %}
+{% block content %}
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('manage_customers') }}">Customers</a></nav></div>
+<div class="col-md-10 py-4"><h2>Customers</h2><table class="table"><thead><tr><th>Name</th><th>Phone</th><th>Area</th><th>Action</th></tr></thead><tbody>{% for c in customers %}<tr><td>{{ c.name }}</td><td>{{ c.phone_number }}</td><td>{{ c.area_of_residence or '-' }}</td><td><a href="{{ url_for('view_customer', user_id=c.id) }}" class="btn btn-sm btn-primary">View</a></td></tr>{% endfor %}</tbody></table></div></div></div>
+{% endblock %}

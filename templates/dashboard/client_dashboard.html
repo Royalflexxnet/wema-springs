@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}My Dashboard{% endblock %}
+{% block content %}
+<div class="container py-4"><h2>Welcome, {{ current_user.name }}!</h2><div class="card mt-4"><div class="card-header"><h5>My Orders</h5></div><div class="card-body">{% if orders %}<table class="table"><thead><tr><th>ID</th><th>Date</th><th>Total</th><th>Status</th><th>Payment</th></tr></thead><tbody>{% for o in orders %}<tr><td>#{{ o.id }}</td><td>{{ o.order_date.strftime('%Y-%m-%d') }}</td><td>KES {{ "%.2f"|format(o.total_amount) }}</td><td>{{ o.status }}</td><td>{{ o.payment_status }}</td></tr>{% endfor %}</tbody></table>{% else %}<p>No orders. <a href="{{ url_for('shop_retail') }}">Shop</a></p>{% endif %}</div></div></div>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Field Orders{% endblock %}
+{% block content %}
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('field_order') }}">Field</a></nav></div>
+<div class="col-md-10 py-4"><div class="row"><div class="col-md-6"><div class="card mb-4"><div class="card-header" style="background:#8b5cf6;"><h5>Register Client</h5></div><div class="card-body"><form action="{{ url_for('field_register_client') }}" method="POST"><div class="mb-3"><label>Name</label><input type="text" name="name" class="form-control" required></div><div class="mb-3"><label>Phone</label><input type="text" name="phone_number" class="form-control" required></div><div class="mb-3"><label>Area</label><input type="text" name="area_of_residence" class="form-control"></div><button type="submit" class="btn w-100 text-white" style="background:#8b5cf6;">Register</button></form></div></div>
+<div class="card"><div class="card-header" style="background:#8b5cf6;"><h5>Place Order</h5></div><div class="card-body"><form action="{{ url_for('place_field_order') }}" method="POST">
+<select name="client_id" class="form-control mb-2" required>{% for c in clients %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}</select>
+<select name="product_id" class="form-control mb-2" required>{% for p in products %}<option value="{{ p.id }}">[{{ p.category.upper() }}] {{ p.name }} - KES {{ "%.2f"|format(p.price) }}</option>{% endfor %}</select>
+<input type="number" name="quantity" class="form-control mb-2" value="1" required>
+<input type="text" name="delivery_address" class="form-control mb-2" placeholder="Delivery address">
+<select name="payment_method" class="form-control mb-2"><option value="cash">Cash</option><option value="mpesa">M-Pesa</option></select>
+<input type="text" name="mpesa_code" class="form-control mb-2" placeholder="M-Pesa Code">
+<button type="submit" class="btn w-100 text-white" style="background:#8b5cf6;">Place Order</button></form></div></div></div>
+<div class="col-md-6"><div class="card"><div class="card-header"><h5>Recent</h5></div><div class="card-body"><table class="table table-sm">{% for o in my_orders %}<tr><td>#{{ o.id }}</td><td>{{ o.customer.name }}</td><td>KES {{ "%.2f"|format(o.total_amount) }}</td><td>{{ o.status }}</td></tr>{% endfor %}</table></div></div></div></div></div></div></div>
+{% endblock %}

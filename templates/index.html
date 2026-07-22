@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Wema Springs - Home{% endblock %}
+{% block content %}
+<section class="hero-section"><div class="container"><div class="row"><div class="col-lg-6"><h1 class="hero-title">Pure & Salty Water</h1><p class="lead text-white mb-4">Fresh spring water & bulk salty water delivery.</p><div class="d-flex gap-3 flex-wrap"><a href="{{ url_for('shop_retail') }}" class="btn btn-gold btn-lg">Retail</a><a href="{{ url_for('shop_wholesale') }}" class="btn btn-outline-light btn-lg">Wholesale</a><a href="{{ url_for('shop_salty') }}" class="btn btn-outline-light btn-lg">Salty Water</a></div></div><div class="col-lg-6 text-center"><i class="bi bi-droplet-fill" style="font-size:15rem;color:rgba(255,255,255,0.3);"></i></div></div></div></section>
+{% if retail_products %}<section class="py-5"><div class="container"><h3>Retail Water</h3><div class="row">{% for p in retail_products %}<div class="col-md-3"><div class="card"><div class="card-body text-center"><h5>{{ p.name }}</h5><h4>KES {{ "%.2f"|format(p.price) }}</h4></div></div></div>{% endfor %}</div></div></section>{% endif %}
+{% if salty_products %}<section class="py-5" style="background:#fef3c7;"><div class="container"><h3 style="color:#92400e;">Salty/Borehole Water</h3><div class="row">{% for p in salty_products %}<div class="col-md-3"><div class="card"><div class="card-body text-center"><i class="bi bi-truck"></i><h5>{{ p.name }}</h5><h4>KES {{ "%.2f"|format(p.price) }}</h4></div></div></div>{% endfor %}</div></div></section>{% endif %}
+{% endblock %}

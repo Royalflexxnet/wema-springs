@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Staff{% endblock %}
+{% block content %}
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('manage_users') }}">Staff</a></nav></div>
+<div class="col-md-10 py-4"><div class="d-flex justify-content-between mb-4"><h2>Staff</h2><button class="btn btn-gold" data-bs-toggle="modal" data-bs-target="#addUser">+ Add</button></div>
+<table class="table"><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Actions</th></tr></thead><tbody>{% for u in staff %}<tr><td>{{ u.name }}</td><td>{{ u.username }}</td><td>{{ u.role }}</td><td>{% if u.id!=current_user.id %}<button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#editUser{{ u.id }}">Edit</button><a href="{{ url_for('delete_user', user_id=u.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete?')">Del</a>{% endif %}</td></tr>{% endfor %}</tbody></table></div></div></div>
+{% endblock %}

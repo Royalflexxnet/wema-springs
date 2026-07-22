@@ -1,0 +1,5 @@
+{% extends "base.html" %}
+{% block title %}Customer{% endblock %}
+{% block content %}
+<div class="container py-4"><h2>{{ customer.name }}</h2><p>{{ customer.phone_number }} | {{ customer.area_of_residence or '-' }}</p><table class="table"><thead><tr><th>ID</th><th>Date</th><th>Total</th><th>Payment</th><th>Status</th></tr></thead><tbody>{% for o in orders %}<tr><td>#{{ o.id }}</td><td>{{ o.order_date.strftime('%Y-%m-%d') }}</td><td>KES {{ "%.2f"|format(o.total_amount) }}</td><td>{{ o.payment_status }}</td><td>{{ o.status }}</td></tr>{% endfor %}</tbody></table></div>
+{% endblock %}
