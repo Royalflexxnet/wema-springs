@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, make_response
 from flask_login import login_user, login_required, logout_user, current_user
-from database import db, login_manager, User, Product, Order, OrderItem, Inventory, MeterReading, PriceHistory, WalkInSale
+from database import db, login_manager, User, Product, Order, OrderItem, Inventory, MeterReading, PriceHistory, WalkInSale, Expense
 from datetime import datetime, timedelta
 from functools import wraps
 from sqlalchemy import func, or_
@@ -47,31 +47,26 @@ def staff_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-def generate_pdf(elements, filename):
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
-    doc.build(elements)
-    buffer.seek(0)
-    response = make_response(buffer.getvalue())
-    response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = f'attachment; filename={filename}'
-    return response
-
 @app.route('/')
 def index():
-    retail_products = Product.query.filter_by(category='retail').limit(4).all()
-    wholesale_products = Product.query.filter_by(category='wholesale').limit(4).all()
-    return render_template('index.html', retail_products=retail_products, wholesale_products=wholesale_products)
+    pure_retail = Product.query.filter_by(category='retail', water_type='pure').limit(4).all()
+    salt_retail = Product.query.filter_by(category='retail', water_type='salt').limit(4).all()
+    pure_wholesale = Product.query.filter_by(category='wholesale', water_type='pure').limit(4).all()
+    salt_wholesale = Product.query.filter_by(category='wholesale', water_type='salt').limit(4).all()
+    return render_template('index.html', pure_retail=pure_retail, salt_retail=salt_retail,
+                           pure_wholesale=pure_wholesale, salt_wholesale=salt_wholesale)
 
 @app.route('/shop/retail')
 def shop_retail():
-    products = Product.query.filter_by(category='retail').all()
-    return render_template('shop_retail.html', products=products)
+    water_type = request.args.get('type', 'pure')
+    products = Product.query.filter_by(category='retail', water_type=water_type).all()
+    return render_template('shop_retail.html', products=products, water_type=water_type)
 
 @app.route('/shop/wholesale')
 def shop_wholesale():
-    products = Product.query.filter_by(category='wholesale').all()
-    return render_template('shop_wholesale.html', products=products)
+    water_type = request.args.get('type', 'pure')
+    products = Product.query.filter_by(category='wholesale', water_type=water_type).all()
+    return render_template('shop_wholesale.html', products=products, water_type=water_type)
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
@@ -80,8 +75,9 @@ def register():
         password = request.form.get('password')
         confirm_password = request.form.get('confirm_password')
         name = request.form.get('name')
-        email = request.form.get('email', '')
-        area = request.form.get('area_of_residence', '')
+        email = request.form.get('email')
+        area = request.form.get('area_of_residence')
+        customer_type = request.form.get('customer_type', 'pure')
         if not phone or not password or not name:
             flash('Please fill all required fields.', 'danger')
             return redirect(url_for('register'))
@@ -89,13 +85,14 @@ def register():
             flash('Passwords do not match!', 'danger')
             return redirect(url_for('register'))
         if User.query.filter_by(phone_number=phone).first():
-            flash('Phone already registered!', 'danger')
+            flash('Phone number already registered!', 'danger')
             return redirect(url_for('login'))
-        user = User(phone_number=phone, name=name, email=email, area_of_residence=area, role='client')
+        user = User(phone_number=phone, name=name, email=email, area_of_residence=area,
+                    role='client', customer_type=customer_type)
         user.set_password(password)
         db.session.add(user)
         db.session.commit()
-        flash('Registered! Please login.', 'success')
+        flash('Registration successful! Please login.', 'success')
         return redirect(url_for('login'))
     return render_template('register.html')
 
@@ -105,7 +102,7 @@ def login():
         login_id = request.form.get('login_id', '').strip()
         password = request.form.get('password', '')
         if not login_id or not password:
-            flash('Enter login details.', 'danger')
+            flash('Please enter your login details.', 'danger')
             return render_template('login.html')
         user = User.query.filter(or_(User.username == login_id, User.phone_number == login_id)).first()
         if user and user.check_password(password):
@@ -141,7 +138,7 @@ def place_order():
     product = Product.query.get_or_404(product_id)
     if product.stock_quantity < quantity:
         flash('Insufficient stock!', 'danger')
-        return redirect(url_for('shop_retail'))
+        return redirect(request.referrer or url_for('shop_retail'))
     total = product.price * quantity
     order = Order(user_id=current_user.id, total_amount=total, mpesa_code=mpesa_code,
                   payment_status='paid' if mpesa_code else 'pending',
@@ -156,63 +153,97 @@ def place_order():
     flash(f'Order placed! KES {total:.2f}', 'success')
     return redirect(url_for('client_dashboard'))
 
+@app.route('/track-order/<int:order_id>')
+@login_required
+def track_order(order_id):
+    order = Order.query.get_or_404(order_id)
+    if order.user_id != current_user.id and current_user.role == 'client':
+        flash('Access denied.', 'danger')
+        return redirect(url_for('client_dashboard'))
+    return render_template('dashboard/track_order.html', order=order)
+
+@app.route('/change-password', methods=['GET', 'POST'])
+@login_required
+def change_password():
+    if request.method == 'POST':
+        old_pw = request.form.get('old_password')
+        new_pw = request.form.get('new_password')
+        confirm_pw = request.form.get('confirm_password')
+        if not current_user.check_password(old_pw):
+            flash('Current password is incorrect.', 'danger')
+        elif new_pw != confirm_pw:
+            flash('New passwords do not match.', 'danger')
+        elif len(new_pw) < 4:
+            flash('Password too short.', 'danger')
+        else:
+            current_user.set_password(new_pw)
+            db.session.commit()
+            flash('Password updated!', 'success')
+            return redirect(url_for('client_dashboard') if current_user.role == 'client' else url_for('admin_dashboard'))
+    return render_template('change_password.html')
+
 @app.route('/dashboard/admin')
 @login_required
 @staff_required
 def admin_dashboard():
     if current_user.is_field_marshal:
         total_orders = Order.query.filter_by(field_marshal_id=current_user.id).count()
+        recent_orders = Order.query.filter_by(field_marshal_id=current_user.id).order_by(Order.order_date.desc()).limit(5).all()
     else:
         total_orders = Order.query.count()
+        recent_orders = Order.query.order_by(Order.order_date.desc()).limit(5).all()
     total_walkins = db.session.query(func.sum(WalkInSale.total_amount)).scalar() or 0
     online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.payment_status == 'paid').scalar() or 0
     total_revenue = online_sales + total_walkins
     total_customers = User.query.filter_by(role='client').count()
     total_products = Product.query.count()
+    recent_walkins = WalkInSale.query.order_by(WalkInSale.sale_date.desc()).limit(5).all()
     low_stock = Product.query.filter(Product.stock_quantity < 10).all()
     return render_template('dashboard/admin_dashboard.html',
                          total_orders=total_orders, total_revenue=total_revenue,
-                         total_customers=total_customers, total_products=total_products, low_stock=low_stock)
+                         total_customers=total_customers, total_products=total_products,
+                         recent_orders=recent_orders, recent_walkins=recent_walkins, low_stock=low_stock)
 
-@app.route('/admin/field-order')
+@app.route('/admin/clients/add', methods=['POST'])
 @login_required
 @staff_required
-def field_order():
+def add_client():
     if not current_user.is_field_marshal and current_user.role != 'admin':
-        flash('Field Marshals only.', 'danger')
+        flash('Only admins and field marshals can add clients.', 'danger')
         return redirect(url_for('admin_dashboard'))
-    products = Product.query.filter(Product.stock_quantity > 0).all()
-    clients = User.query.filter_by(role='client').order_by(User.name).all()
-    my_orders = Order.query.filter_by(field_marshal_id=current_user.id).order_by(Order.order_date.desc()).limit(20).all()
-    return render_template('dashboard/field_order.html', products=products, clients=clients, my_orders=my_orders)
+    phone = request.form.get('phone_number', '').strip()
+    name = request.form.get('name')
+    area = request.form.get('area', '')
+    customer_type = request.form.get('customer_type', 'pure')
+    password = request.form.get('password', '1234')
+    if not phone or not name:
+        flash('Phone and name required.', 'danger')
+        return redirect(url_for('manage_customers'))
+    if User.query.filter_by(phone_number=phone).first():
+        flash('Client exists.', 'danger')
+        return redirect(url_for('manage_customers'))
+    client = User(phone_number=phone, name=name, area_of_residence=area, role='client', customer_type=customer_type)
+    client.set_password(password)
+    db.session.add(client)
+    db.session.commit()
+    flash(f'Client {name} added!', 'success')
+    return redirect(url_for('manage_customers'))
 
-@app.route('/admin/field-order/place', methods=['POST'])
+@app.route('/admin/clients/delete/<int:user_id>')
 @login_required
 @staff_required
-def place_field_order():
-    product_id = request.form.get('product_id')
-    quantity = int(request.form.get('quantity', 1))
-    client_id = request.form.get('client_id')
-    mpesa_code = request.form.get('mpesa_code', '')
-    delivery_address = request.form.get('delivery_address', '')
-    payment_method = request.form.get('payment_method', 'cash')
-    product = Product.query.get_or_404(product_id)
-    if product.stock_quantity < quantity:
-        flash('Insufficient stock!', 'danger')
-        return redirect(url_for('field_order'))
-    total = product.price * quantity
-    order = Order(user_id=client_id, field_marshal_id=current_user.id, total_amount=total,
-                  mpesa_code=mpesa_code, payment_status='paid' if (mpesa_code or payment_method == 'mpesa') else 'pending',
-                  delivery_address=delivery_address, order_type=product.category, source='field_marshal')
-    db.session.add(order)
-    db.session.flush()
-    db.session.add(OrderItem(order_id=order.id, product_id=product.id, quantity=quantity, unit_price=product.price))
-    product.stock_quantity -= quantity
-    db.session.add(Inventory(product_id=product.id, stock_out=quantity, current_stock=product.stock_quantity,
-                   recorded_by=current_user.id, notes=f'Field order #{order.id}'))
+def delete_client(user_id):
+    if not current_user.is_field_marshal and current_user.role != 'admin':
+        flash('Only admins and field marshals.', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    client = User.query.get_or_404(user_id)
+    if client.role != 'client':
+        flash('Can only delete clients.', 'danger')
+        return redirect(url_for('manage_customers'))
+    db.session.delete(client)
     db.session.commit()
-    flash(f'Order placed! KES {total:.2f}', 'success')
-    return redirect(url_for('field_order'))
+    flash('Client removed.', 'success')
+    return redirect(url_for('manage_customers'))
 
 @app.route('/admin/walkin-sale')
 @login_required
@@ -238,7 +269,7 @@ def record_walkin_sale():
     total = product.price * quantity
     db.session.add(WalkInSale(product_id=product.id, quantity=quantity, unit_price=product.price,
                    total_amount=total, payment_method=payment_method,
-                   mpesa_code=mpesa_code if payment_method == 'mpesa' else None,
+                   mpesa_code=mpesa_code if payment_method=='mpesa' else None,
                    customer_name=customer_name, recorded_by=current_user.id))
     product.stock_quantity -= quantity
     db.session.add(Inventory(product_id=product.id, stock_out=quantity, current_stock=product.stock_quantity,
@@ -251,8 +282,12 @@ def record_walkin_sale():
 @login_required
 @permission_required('can_view_customers')
 def manage_customers():
-    customers = User.query.filter_by(role='client').order_by(User.name).all()
-    return render_template('dashboard/customers.html', customers=customers)
+    customer_type_filter = request.args.get('type', 'all')
+    if customer_type_filter == 'all':
+        customers = User.query.filter_by(role='client').order_by(User.created_at.desc()).all()
+    else:
+        customers = User.query.filter_by(role='client', customer_type=customer_type_filter).order_by(User.created_at.desc()).all()
+    return render_template('dashboard/customers.html', customers=customers, current_filter=customer_type_filter)
 
 @app.route('/admin/customers/view/<int:user_id>')
 @login_required
@@ -265,39 +300,30 @@ def view_customer(user_id):
 @login_required
 @permission_required('can_manage_users')
 def manage_users():
-    all_staff = User.query.filter(User.role != 'client').order_by(User.created_at.desc()).all()
-    all_clients = User.query.filter_by(role='client').order_by(User.name).all()
-    return render_template('dashboard/users.html', staff=all_staff, clients=all_clients)
+    staff = User.query.filter(User.role != 'client').order_by(User.created_at.desc()).all()
+    return render_template('dashboard/users.html', staff=staff)
 
 @app.route('/admin/users/add', methods=['POST'])
 @login_required
 @permission_required('can_manage_users')
 def add_user():
-    role = request.form.get('role', 'client')
-    is_staff = (role != 'client')
-    user = User(
-        username=request.form.get('username') if is_staff else None,
-        phone_number=request.form.get('phone_number') or None,
-        name=request.form.get('name'),
-        role=role,
-        email=request.form.get('email', ''),
-        area_of_residence=request.form.get('area_of_residence', ''),
-        is_field_marshal=(role == 'field_marshal'),
-        can_dashboard=is_staff,
-        can_edit_products=bool(request.form.get('can_edit_products')) if is_staff else False,
-        can_manage_inventory=bool(request.form.get('can_manage_inventory')) if is_staff else False,
-        can_record_sales=bool(request.form.get('can_record_sales')) if is_staff else False,
-        can_view_orders=bool(request.form.get('can_view_orders')) if is_staff else False,
-        can_manage_orders=bool(request.form.get('can_manage_orders')) if is_staff else False,
-        can_manage_users=bool(request.form.get('can_manage_users')) if is_staff else False,
-        can_view_reports=bool(request.form.get('can_view_reports')) if is_staff else False,
-        can_view_customers=bool(request.form.get('can_view_customers')) if is_staff else False,
-        can_meter_readings=bool(request.form.get('can_meter_readings')) if is_staff else False
-    )
+    role = request.form.get('role', 'cashier')
+    user = User(username=request.form.get('username'), phone_number=request.form.get('phone_number') or None,
+                name=request.form.get('name'), role=role, email=request.form.get('email'),
+                is_field_marshal=(role=='field_marshal'), can_dashboard=True,
+                can_edit_products=bool(request.form.get('can_edit_products')),
+                can_manage_inventory=bool(request.form.get('can_manage_inventory')),
+                can_record_sales=bool(request.form.get('can_record_sales')),
+                can_view_orders=bool(request.form.get('can_view_orders')),
+                can_manage_orders=bool(request.form.get('can_manage_orders')),
+                can_manage_users=bool(request.form.get('can_manage_users')),
+                can_view_reports=bool(request.form.get('can_view_reports')),
+                can_view_customers=bool(request.form.get('can_view_customers')),
+                can_meter_readings=bool(request.form.get('can_meter_readings')))
     user.set_password(request.form.get('password'))
     db.session.add(user)
     db.session.commit()
-    flash(f'User {user.name} created as {role}!', 'success')
+    flash(f'Staff {user.name} created!', 'success')
     return redirect(url_for('manage_users'))
 
 @app.route('/admin/users/edit/<int:user_id>', methods=['POST'])
@@ -308,23 +334,19 @@ def edit_user(user_id):
     user.name = request.form.get('name', user.name)
     user.role = request.form.get('role', user.role)
     user.email = request.form.get('email', user.email)
-    user.phone_number = request.form.get('phone_number') or user.phone_number
     user.username = request.form.get('username') or user.username
-    user.area_of_residence = request.form.get('area_of_residence', user.area_of_residence)
-    is_staff = (user.role != 'client')
     user.is_field_marshal = (user.role == 'field_marshal')
-    if is_staff:
-        user.can_edit_products = bool(request.form.get('can_edit_products'))
-        user.can_manage_inventory = bool(request.form.get('can_manage_inventory'))
-        user.can_record_sales = bool(request.form.get('can_record_sales'))
-        user.can_view_orders = bool(request.form.get('can_view_orders'))
-        user.can_manage_orders = bool(request.form.get('can_manage_orders'))
-        user.can_manage_users = bool(request.form.get('can_manage_users'))
-        user.can_view_reports = bool(request.form.get('can_view_reports'))
-        user.can_view_customers = bool(request.form.get('can_view_customers'))
-        user.can_meter_readings = bool(request.form.get('can_meter_readings'))
+    user.can_edit_products = bool(request.form.get('can_edit_products'))
+    user.can_manage_inventory = bool(request.form.get('can_manage_inventory'))
+    user.can_record_sales = bool(request.form.get('can_record_sales'))
+    user.can_view_orders = bool(request.form.get('can_view_orders'))
+    user.can_manage_orders = bool(request.form.get('can_manage_orders'))
+    user.can_manage_users = bool(request.form.get('can_manage_users'))
+    user.can_view_reports = bool(request.form.get('can_view_reports'))
+    user.can_view_customers = bool(request.form.get('can_view_customers'))
+    user.can_meter_readings = bool(request.form.get('can_meter_readings'))
     db.session.commit()
-    flash('User updated!', 'success')
+    flash('Staff updated!', 'success')
     return redirect(url_for('manage_users'))
 
 @app.route('/admin/users/delete/<int:user_id>')
@@ -332,36 +354,39 @@ def edit_user(user_id):
 @permission_required('can_manage_users')
 def delete_user(user_id):
     if user_id == current_user.id:
-        flash('Cannot delete yourself!', 'danger')
+        flash('Cannot delete yourself.', 'danger')
         return redirect(url_for('manage_users'))
     db.session.delete(User.query.get_or_404(user_id))
     db.session.commit()
-    flash('User deleted!', 'success')
+    flash('Staff deleted!', 'success')
     return redirect(url_for('manage_users'))
 
 @app.route('/admin/prices')
 @login_required
 @permission_required('can_edit_products')
 def manage_prices():
-    retail_products = Product.query.filter_by(category='retail').all()
-    wholesale_products = Product.query.filter_by(category='wholesale').all()
-    return render_template('dashboard/prices.html', retail_products=retail_products, wholesale_products=wholesale_products)
+    pure_retail = Product.query.filter_by(category='retail', water_type='pure').all()
+    salt_retail = Product.query.filter_by(category='retail', water_type='salt').all()
+    pure_wholesale = Product.query.filter_by(category='wholesale', water_type='pure').all()
+    salt_wholesale = Product.query.filter_by(category='wholesale', water_type='salt').all()
+    return render_template('dashboard/prices.html', pure_retail=pure_retail, salt_retail=salt_retail,
+                           pure_wholesale=pure_wholesale, salt_wholesale=salt_wholesale)
 
 @app.route('/admin/products/add', methods=['POST'])
 @login_required
 @permission_required('can_edit_products')
 def add_product():
     category = request.form.get('category')
-    product = Product(name=request.form.get('name'), category=category,
+    water_type = request.form.get('water_type', 'pure')
+    product = Product(name=request.form.get('name'), category=category, water_type=water_type,
                       price=float(request.form.get('price', 0)),
-                      wholesale_min_qty=int(request.form.get('wholesale_min_qty', 0)) if category == 'wholesale' else 0)
+                      wholesale_min_qty=int(request.form.get('wholesale_min_qty', 0)) if category=='wholesale' else 0)
     db.session.add(product)
     db.session.flush()
     if 'image' in request.files and request.files['image'].filename:
         img = request.files['image']
-        fname = f"product_{product.id}_{img.filename}"
-        img.save(os.path.join(app.config['UPLOAD_FOLDER'], fname))
-        product.image = fname
+        img.save(os.path.join(app.config['UPLOAD_FOLDER'], f"product_{product.id}_{img.filename}"))
+        product.image = f"product_{product.id}_{img.filename}"
     db.session.commit()
     flash('Product added!', 'success')
     return redirect(url_for('manage_prices'))
@@ -372,13 +397,34 @@ def add_product():
 def update_price():
     product = Product.query.get_or_404(request.form.get('product_id'))
     new_price = float(request.form.get('price', 0))
+    new_stock = int(request.form.get('stock_quantity', -1))
+
     if product.price != new_price:
         db.session.add(PriceHistory(product_id=product.id, old_price=product.price or 0, new_price=new_price, changed_by=current_user.id))
+
     product.name = request.form.get('name', product.name)
     product.category = request.form.get('category', product.category)
+    product.water_type = request.form.get('water_type', product.water_type)
     product.price = new_price if new_price > 0 else product.price
+
     if product.category == 'wholesale':
         product.wholesale_min_qty = int(request.form.get('wholesale_min_qty', product.wholesale_min_qty))
+
+    if new_stock >= 0:
+        old_stock = product.stock_quantity
+        product.stock_quantity = new_stock
+        if new_stock > old_stock:
+            db.session.add(Inventory(product_id=product.id, stock_in=new_stock - old_stock, current_stock=new_stock,
+                           recorded_by=current_user.id, notes='Stock adjusted (increase)'))
+        elif new_stock < old_stock:
+            db.session.add(Inventory(product_id=product.id, stock_out=old_stock - new_stock, current_stock=new_stock,
+                           recorded_by=current_user.id, notes='Stock adjusted (decrease)'))
+
+    if 'image' in request.files and request.files['image'].filename:
+        img = request.files['image']
+        img.save(os.path.join(app.config['UPLOAD_FOLDER'], f"product_{product.id}_{img.filename}"))
+        product.image = f"product_{product.id}_{img.filename}"
+
     db.session.commit()
     flash('Product updated!', 'success')
     return redirect(url_for('manage_prices'))
@@ -404,27 +450,71 @@ def add_stock():
     flash(f'Added {qty} units!', 'success')
     return redirect(url_for('inventory'))
 
+@app.route('/admin/inventory/edit/<int:record_id>', methods=['POST'])
+@login_required
+@permission_required('can_manage_inventory')
+def edit_inventory(record_id):
+    r = Inventory.query.get_or_404(record_id)
+    p = Product.query.get(r.product_id)
+    oi, oo = r.stock_in, r.stock_out
+    ni, no = int(request.form.get('stock_in',0)), int(request.form.get('stock_out',0))
+    p.stock_quantity = p.stock_quantity - oi + oo + ni - no
+    r.stock_in, r.stock_out, r.current_stock = ni, no, p.stock_quantity
+    r.notes = request.form.get('notes', r.notes)
+    db.session.commit()
+    flash('Updated!', 'success')
+    return redirect(url_for('inventory'))
+
+@app.route('/admin/expenses')
+@login_required
+@permission_required('can_view_reports')
+def manage_expenses():
+    expenses = Expense.query.order_by(Expense.expense_date.desc()).all()
+    total_expenses = db.session.query(func.sum(Expense.amount)).scalar() or 0
+    return render_template('dashboard/expenses.html', expenses=expenses, total_expenses=total_expenses)
+
+@app.route('/admin/expenses/add', methods=['POST'])
+@login_required
+@permission_required('can_view_reports')
+def add_expense():
+    db.session.add(Expense(category=request.form.get('category'),
+                          amount=float(request.form.get('amount')),
+                          description=request.form.get('description'),
+                          recorded_by=current_user.id))
+    db.session.commit()
+    flash('Expense recorded!', 'success')
+    return redirect(url_for('manage_expenses'))
+
+@app.route('/admin/expenses/delete/<int:expense_id>')
+@login_required
+@permission_required('can_view_reports')
+def delete_expense(expense_id):
+    Expense.query.get_or_404(expense_id)
+    db.session.delete(Expense.query.get(expense_id))
+    db.session.commit()
+    flash('Expense deleted.', 'success')
+    return redirect(url_for('manage_expenses'))
+
 @app.route('/admin/meter-readings')
 @login_required
 @permission_required('can_meter_readings')
 def meter_readings():
-    readings = MeterReading.query.order_by(MeterReading.reading_date.desc()).all()
-    return render_template('dashboard/meter_reading.html', readings=readings)
+    water_type = request.args.get('type', 'pure')
+    readings = MeterReading.query.filter_by(water_type=water_type).order_by(MeterReading.reading_date.desc()).all()
+    return render_template('dashboard/meter_reading.html', readings=readings, water_type=water_type)
 
 @app.route('/admin/meter-readings/add', methods=['POST'])
 @login_required
 @permission_required('can_meter_readings')
 def add_meter_reading():
-    db.session.add(MeterReading(
-        meter_number=request.form.get('meter_number'),
-        reading_value=float(request.form.get('reading_value')),
-        liters_produced=float(request.form.get('liters_produced')),
-        recorded_by=current_user.id,
-        notes=request.form.get('notes', '')
-    ))
+    db.session.add(MeterReading(meter_number=request.form.get('meter_number'),
+                                water_type=request.form.get('water_type', 'pure'),
+                                reading_value=float(request.form.get('reading_value')),
+                                liters_produced=float(request.form.get('liters_produced')),
+                                recorded_by=current_user.id, notes=request.form.get('notes', '')))
     db.session.commit()
-    flash('Meter reading recorded successfully!', 'success')
-    return redirect(url_for('meter_readings'))
+    flash('Reading recorded!', 'success')
+    return redirect(url_for('meter_readings', type=request.form.get('water_type', 'pure')))
 
 @app.route('/admin/orders')
 @login_required
@@ -447,6 +537,46 @@ def update_order(order_id):
     flash('Order updated!', 'success')
     return redirect(url_for('manage_orders'))
 
+@app.route('/admin/field-order')
+@login_required
+def field_order():
+    if not current_user.is_field_marshal and current_user.role != 'admin':
+        flash('Only Field Marshals.', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    products = Product.query.filter(Product.stock_quantity > 0).all()
+    clients = User.query.filter_by(role='client').order_by(User.name).all()
+    my_orders = Order.query.filter_by(field_marshal_id=current_user.id).order_by(Order.order_date.desc()).limit(20).all()
+    return render_template('dashboard/field_order.html', products=products, clients=clients, my_orders=my_orders)
+
+@app.route('/admin/field-order/place', methods=['POST'])
+@login_required
+def place_field_order():
+    if not current_user.is_field_marshal and current_user.role != 'admin':
+        flash('Permission denied.', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    product_id = request.form.get('product_id')
+    quantity = int(request.form.get('quantity',1))
+    client_id = request.form.get('client_id')
+    mpesa_code = request.form.get('mpesa_code','')
+    delivery_address = request.form.get('delivery_address','')
+    product = Product.query.get_or_404(product_id)
+    if product.stock_quantity < quantity:
+        flash('Insufficient stock!', 'danger')
+        return redirect(url_for('field_order'))
+    total = product.price * quantity
+    order = Order(user_id=client_id, field_marshal_id=current_user.id, total_amount=total,
+                  mpesa_code=mpesa_code, payment_status='paid' if mpesa_code else 'pending',
+                  delivery_address=delivery_address, order_type=product.category, source='field_marshal')
+    db.session.add(order)
+    db.session.flush()
+    db.session.add(OrderItem(order_id=order.id, product_id=product.id, quantity=quantity, unit_price=product.price))
+    product.stock_quantity -= quantity
+    db.session.add(Inventory(product_id=product.id, stock_out=quantity, current_stock=product.stock_quantity,
+                   recorded_by=current_user.id, notes=f'Field order #{order.id}'))
+    db.session.commit()
+    flash(f'Order placed! KES {total:.2f}', 'success')
+    return redirect(url_for('field_order'))
+
 @app.route('/admin/reports')
 @login_required
 @permission_required('can_view_reports')
@@ -455,69 +585,50 @@ def reports():
     end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
     start_dt = datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.order_date.between(start_dt, end_dt)).filter(Order.payment_status == 'paid').scalar() or 0
+    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.order_date.between(start_dt, end_dt), Order.payment_status=='paid').scalar() or 0
     total_walkins = db.session.query(func.sum(WalkInSale.total_amount)).filter(WalkInSale.sale_date.between(start_dt, end_dt)).scalar() or 0
+    total_expenses = db.session.query(func.sum(Expense.amount)).filter(Expense.expense_date.between(start_dt, end_dt)).scalar() or 0
+    pure_produced = db.session.query(func.sum(MeterReading.liters_produced)).filter(MeterReading.water_type=='pure', MeterReading.reading_date.between(start_dt, end_dt)).scalar() or 0
+    salt_produced = db.session.query(func.sum(MeterReading.liters_produced)).filter(MeterReading.water_type=='salt', MeterReading.reading_date.between(start_dt, end_dt)).scalar() or 0
+    total_revenue = online_sales + total_walkins
+    profit = total_revenue - total_expenses
     total_orders = Order.query.filter(Order.order_date.between(start_dt, end_dt)).count()
-    total_produced = db.session.query(func.sum(MeterReading.liters_produced)).filter(MeterReading.reading_date.between(start_dt, end_dt)).scalar() or 0
+    fm_stats = []
+    for fm in User.query.filter_by(is_field_marshal=True).all():
+        cnt = Order.query.filter_by(field_marshal_id=fm.id).filter(Order.order_date.between(start_dt, end_dt)).count()
+        rev = db.session.query(func.sum(Order.total_amount)).filter_by(field_marshal_id=fm.id).filter(Order.order_date.between(start_dt, end_dt), Order.payment_status=='paid').scalar() or 0
+        fm_stats.append({'name':fm.name,'orders':cnt,'revenue':rev})
     return render_template('dashboard/reports.html', start_date=start_date, end_date=end_date,
                          online_sales=online_sales, total_walkins=total_walkins,
-                         total_revenue=online_sales + total_walkins,
-                         total_orders=total_orders, total_produced=total_produced)
+                         total_revenue=total_revenue, total_expenses=total_expenses,
+                         profit=profit, total_orders=total_orders, fm_stats=fm_stats,
+                         pure_produced=pure_produced, salt_produced=salt_produced)
 
-@app.route('/admin/reports/sales-pdf')
+@app.route('/admin/reports/pdf')
 @login_required
 @permission_required('can_view_reports')
-def sales_report_pdf():
+def reports_pdf():
     start_date = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
     end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
     start_dt = datetime.strptime(start_date, '%Y-%m-%d')
     end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
+    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.order_date.between(start_dt, end_dt), Order.payment_status=='paid').scalar() or 0
+    total_walkins = db.session.query(func.sum(WalkInSale.total_amount)).filter(WalkInSale.sale_date.between(start_dt, end_dt)).scalar() or 0
+    total_expenses = db.session.query(func.sum(Expense.amount)).filter(Expense.expense_date.between(start_dt, end_dt)).scalar() or 0
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30)
     styles = getSampleStyleSheet()
-    elements = [Paragraph("WEMA SPRINGS - SALES REPORT", styles['Title']), Paragraph(f"{start_date} to {end_date}", styles['Normal']), Spacer(1, 15)]
-    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.order_date.between(start_dt, end_dt)).filter(Order.payment_status == 'paid').scalar() or 0
-    walkin_sales = db.session.query(func.sum(WalkInSale.total_amount)).filter(WalkInSale.sale_date.between(start_dt, end_dt)).scalar() or 0
-    sd = [['SALES SUMMARY', ''], ['Online Sales', f'KES {online_sales:,.2f}'], ['Walk-in Sales', f'KES {walkin_sales:,.2f}'], ['TOTAL', f'KES {online_sales+walkin_sales:,.2f}']]
-    st = Table(sd, colWidths=[250, 250])
-    st.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('SPAN', (0, 0), (-1, 0)), ('GRID', (0, 0), (-1, -1), 1, colors.black), ('BACKGROUND', (0, 3), (-1, 3), colors.HexColor('#f59e0b'))]))
+    elements = [Paragraph("WEMA SPRINGS - REPORT", styles['Title']), Paragraph(f"{start_date} to {end_date}", styles['Normal']), Spacer(1,20)]
+    sd = [['SUMMARY',''],['Online Sales',f'KES {online_sales:,.2f}'],['Walk-in',f'KES {total_walkins:,.2f}'],['Expenses',f'KES {total_expenses:,.2f}'],['Profit',f'KES {online_sales+total_walkins-total_expenses:,.2f}']]
+    st = Table(sd, colWidths=[200,200])
+    st.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1e40af')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('SPAN',(0,0),(-1,0)),('GRID',(0,0),(-1,-1),1,colors.black)]))
     elements.append(st)
-    return generate_pdf(elements, f'Sales_Report_{start_date}_{end_date}.pdf')
-
-@app.route('/admin/reports/inventory-pdf')
-@login_required
-@permission_required('can_view_reports')
-def inventory_report_pdf():
-    styles = getSampleStyleSheet()
-    elements = [Paragraph("WEMA SPRINGS - INVENTORY REPORT", styles['Title']), Spacer(1, 15)]
-    products = Product.query.all()
-    idata = [['Product', 'Category', 'Price', 'Stock', 'Status']]
-    for p in products:
-        status = 'Good' if p.stock_quantity > 20 else 'Low' if p.stock_quantity > 5 else 'Critical'
-        idata.append([p.name, p.category, f'{p.price:,.2f}', str(p.stock_quantity), status])
-    it = Table(idata, colWidths=[150, 80, 80, 60, 80])
-    it.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('GRID', (0, 0), (-1, -1), 1, colors.black)]))
-    elements.append(it)
-    return generate_pdf(elements, f'Inventory_Report_{datetime.now().strftime("%Y%m%d")}.pdf')
-
-@app.route('/admin/reports/meter-pdf')
-@login_required
-@permission_required('can_view_reports')
-def meter_report_pdf():
-    start_date = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
-    end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph("WEMA SPRINGS - METER REPORT", styles['Title']), Paragraph(f"{start_date} to {end_date}", styles['Normal']), Spacer(1, 15)]
-    readings = MeterReading.query.filter(MeterReading.reading_date.between(start_dt, end_dt)).order_by(MeterReading.reading_date.desc()).all()
-    total_liters = sum(r.liters_produced for r in readings)
-    elements.append(Paragraph(f"Total Water Produced: {total_liters:,.0f} Liters", styles['Heading3']))
-    elements.append(Spacer(1, 10))
-    mdata = [['Date', 'Meter #', 'Reading', 'Liters', 'Notes']]
-    for r in readings: mdata.append([r.reading_date.strftime('%Y-%m-%d %H:%M'), r.meter_number, str(r.reading_value), f'{r.liters_produced:,.0f}', r.notes or ''])
-    mt = Table(mdata, colWidths=[100, 80, 80, 80, 150])
-    mt.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e40af')), ('TEXTCOLOR', (0, 0), (-1, 0), colors.white), ('GRID', (0, 0), (-1, -1), 1, colors.black), ('FONTSIZE', (0, 0), (-1, -1), 8)]))
-    elements.append(mt)
-    return generate_pdf(elements, f'Meter_Report_{start_date}_{end_date}.pdf')
+    doc.build(elements)
+    buffer.seek(0)
+    response = make_response(buffer.getvalue())
+    response.headers['Content-Type'] = 'application/pdf'
+    response.headers['Content-Disposition'] = f'attachment; filename=Wema_Report_{start_date}.pdf'
+    return response
 
 with app.app_context():
     db.drop_all()
@@ -530,6 +641,7 @@ with app.app_context():
     db.session.add(admin)
     db.session.commit()
     print("✅ Admin: admin / admin123")
+    print("✅ System ready.")
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(debug=True, port=5000)

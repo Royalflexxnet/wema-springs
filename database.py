@@ -16,6 +16,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(100))
     area_of_residence = db.Column(db.String(200))
     role = db.Column(db.String(30), default='client')
+    customer_type = db.Column(db.String(20), default='pure')
     can_dashboard = db.Column(db.Boolean, default=False)
     can_edit_products = db.Column(db.Boolean, default=False)
     can_manage_inventory = db.Column(db.Boolean, default=False)
@@ -28,10 +29,10 @@ class User(UserMixin, db.Model):
     can_meter_readings = db.Column(db.Boolean, default=False)
     is_field_marshal = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
-        
+
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
@@ -40,6 +41,7 @@ class Product(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100))
     category = db.Column(db.String(20))
+    water_type = db.Column(db.String(20), default='pure')
     price = db.Column(db.Float)
     wholesale_min_qty = db.Column(db.Integer, default=0)
     stock_quantity = db.Column(db.Integer, default=0)
@@ -103,6 +105,7 @@ class MeterReading(db.Model):
     __tablename__ = 'meter_readings'
     id = db.Column(db.Integer, primary_key=True)
     meter_number = db.Column(db.String(50))
+    water_type = db.Column(db.String(20), default='pure')
     reading_value = db.Column(db.Float)
     liters_produced = db.Column(db.Float)
     reading_date = db.Column(db.DateTime, default=datetime.utcnow)
@@ -117,6 +120,15 @@ class PriceHistory(db.Model):
     new_price = db.Column(db.Float)
     changed_date = db.Column(db.DateTime, default=datetime.utcnow)
     changed_by = db.Column(db.Integer, db.ForeignKey('users.id'))
+
+class Expense(db.Model):
+    __tablename__ = 'expenses'
+    id = db.Column(db.Integer, primary_key=True)
+    category = db.Column(db.String(50))
+    amount = db.Column(db.Float)
+    description = db.Column(db.String(200))
+    expense_date = db.Column(db.DateTime, default=datetime.utcnow)
+    recorded_by = db.Column(db.Integer, db.ForeignKey('users.id'))
 
 @login_manager.user_loader
 def load_user(user_id):

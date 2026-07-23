@@ -1,18 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 {% block content %}
-<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block p-0"><nav class="nav flex-column p-3">
-<a class="nav-link active" href="{{ url_for('admin_dashboard') }}"><i class="bi bi-speedometer2"></i> Dashboard</a>
-{% if current_user.role=='admin' or current_user.can_record_sales %}<a class="nav-link" href="{{ url_for('walkin_sale') }}"><i class="bi bi-cart-plus"></i> Walk-in Sale</a>{% endif %}
-{% if current_user.is_field_marshal or current_user.role=='admin' %}<a class="nav-link" href="{{ url_for('field_order') }}"><i class="bi bi-person-lines-fill"></i> Field Orders</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_view_orders %}<a class="nav-link" href="{{ url_for('manage_orders') }}"><i class="bi bi-cart-check"></i> Orders</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_view_customers %}<a class="nav-link" href="{{ url_for('manage_customers') }}"><i class="bi bi-people"></i> Customers</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_manage_inventory %}<a class="nav-link" href="{{ url_for('inventory') }}"><i class="bi bi-box-seam"></i> Inventory</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_edit_products %}<a class="nav-link" href="{{ url_for('manage_prices') }}"><i class="bi bi-tag"></i> Products</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_manage_users %}<a class="nav-link" href="{{ url_for('manage_users') }}"><i class="bi bi-person-gear"></i> Users</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_meter_readings %}<a class="nav-link" href="{{ url_for('meter_readings') }}"><i class="bi bi-speedometer"></i> Meter</a>{% endif %}
-{% if current_user.role=='admin' or current_user.can_view_reports %}<a class="nav-link" href="{{ url_for('reports') }}"><i class="bi bi-graph-up"></i> Reports</a>{% endif %}</nav></div>
-<div class="col-md-10 col-12 py-3"><h4>Dashboard</h4>
-<div class="row g-2 mb-3"><div class="col-6 col-md-3"><div class="card stats-card"><div class="card-body p-3"><small>Orders</small><div class="stats-number">{{ total_orders }}</div></div></div></div><div class="col-6 col-md-3"><div class="card stats-card"><div class="card-body p-3"><small>Revenue</small><div class="stats-number">KES {{ "%.0f"|format(total_revenue) }}</div></div></div></div><div class="col-6 col-md-3"><div class="card stats-card"><div class="card-body p-3"><small>Customers</small><div class="stats-number">{{ total_customers }}</div></div></div></div><div class="col-6 col-md-3"><div class="card stats-card"><div class="card-body p-3"><small>Products</small><div class="stats-number">{{ total_products }}</div></div></div></div></div>
-</div></div></div>
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar"><nav class="nav flex-column"><a class="nav-link active" href="{{ url_for('admin_dashboard') }}">Dashboard</a>
+{% if current_user.role=='admin' or current_user.can_record_sales %}<a class="nav-link" href="{{ url_for('walkin_sale') }}">Walk-in Sale</a>{% endif %}
+{% if current_user.is_field_marshal or current_user.role=='admin' %}<a class="nav-link" href="{{ url_for('field_order') }}">Field Orders</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_view_orders %}<a class="nav-link" href="{{ url_for('manage_orders') }}">Orders</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_view_customers %}<a class="nav-link" href="{{ url_for('manage_customers') }}">Customers</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_manage_inventory %}<a class="nav-link" href="{{ url_for('inventory') }}">Inventory</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_edit_products %}<a class="nav-link" href="{{ url_for('manage_prices') }}">Products</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_manage_users %}<a class="nav-link" href="{{ url_for('manage_users') }}">Staff</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_view_reports %}<a class="nav-link" href="{{ url_for('manage_expenses') }}">Expenses</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_meter_readings %}<a class="nav-link" href="{{ url_for('meter_readings') }}">Meter</a>{% endif %}
+{% if current_user.role=='admin' or current_user.can_view_reports %}<a class="nav-link" href="{{ url_for('reports') }}">Reports</a>{% endif %}
+</nav></div><div class="col-md-10 py-4"><h2>Dashboard</h2><div class="row"><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Orders</h6><div class="stats-number">{{ total_orders }}</div></div></div></div><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Revenue</h6><div class="stats-number">KES {{ "%.0f"|format(total_revenue) }}</div></div></div></div><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Customers</h6><div class="stats-number">{{ total_customers }}</div></div></div></div><div class="col-md-3"><div class="card stats-card"><div class="card-body"><h6>Products</h6><div class="stats-number">{{ total_products }}</div></div></div></div></div></div></div></div>
 {% endblock %}

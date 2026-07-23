@@ -1,5 +1,5 @@
 {% extends "base.html" %}
 {% block title %}Customer{% endblock %}
 {% block content %}
-<div class="container py-3"><h4>{{ customer.name }}</h4><p>Phone: {{ customer.phone_number }} | Area: {{ customer.area_of_residence or '-' }}</p><table class="table table-sm"><thead><tr><th>ID</th><th>Date</th><th>Total</th><th>Status</th></tr></thead><tbody>{% for o in orders %}<tr><td>#{{ o.id }}</td><td>{{ o.order_date.strftime('%Y-%m-%d') }}</td><td>KES {{ "%.2f"|format(o.total_amount) }}</td><td>{{ o.status }}</td></tr>{% endfor %}</tbody></table></div>
+<div class="container py-4"><h2>{{ customer.name }}</h2><p>Type: {{ customer.customer_type }} | Phone: {{ customer.phone_number }}</p><div class="card"><div class="card-header"><h5>Orders</h5></div><table class="table"><thead><tr><th>ID</th><th>Date</th><th>Total</th></tr></thead><tbody>{% for o in orders %}<tr><td>#{{ o.id }}</td><td>{{ o.order_date.strftime('%Y-%m-%d') }}</td><td>KES {{ "%.2f"|format(o.total_amount) }}</td></tr>{% endfor %}</tbody></table></div></div>
 {% endblock %}
