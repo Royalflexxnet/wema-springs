@@ -16,7 +16,6 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(100))
     area_of_residence = db.Column(db.String(200))
     role = db.Column(db.String(30), default='client')
-    registered_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     can_dashboard = db.Column(db.Boolean, default=False)
     can_edit_products = db.Column(db.Boolean, default=False)
     can_manage_inventory = db.Column(db.Boolean, default=False)

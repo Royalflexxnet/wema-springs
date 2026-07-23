@@ -1,7 +1,17 @@
 {% extends "base.html" %}
-{% block title %}Meter{% endblock %}
+{% block title %}Meter Readings{% endblock %}
 {% block content %}
-<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block"><nav class="nav flex-column"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('meter_readings') }}">Meter</a></nav></div>
-<div class="col-md-10 py-4"><h2>Meter</h2><button class="btn btn-gold mb-4" data-bs-toggle="modal" data-bs-target="#addReading">+ Add</button>
-<table class="table"><thead><tr><th>Date</th><th>Meter #</th><th>Reading</th><th>Liters</th></tr></thead><tbody>{% for r in readings %}<tr><td>{{ r.reading_date.strftime('%Y-%m-%d') }}</td><td>{{ r.meter_number }}</td><td>{{ r.reading_value }}</td><td>{{ r.liters_produced }} L</td></tr>{% endfor %}</tbody></table></div></div></div>
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar d-none d-md-block p-0"><nav class="nav flex-column p-3"><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('meter_readings') }}">Meter</a></nav></div>
+<div class="col-md-10 col-12 py-3"><div class="d-flex justify-content-between mb-3"><h4>Meter Readings</h4><button class="btn btn-gold btn-sm" data-bs-toggle="modal" data-bs-target="#addReadingModal">+ Add Reading</button></div>
+<div class="table-responsive"><table class="table table-sm"><thead><tr><th>Date</th><th>Meter #</th><th>Reading</th><th>Liters Produced</th><th>Notes</th></tr></thead><tbody>{% for r in readings %}<tr><td>{{ r.reading_date.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ r.meter_number }}</td><td>{{ r.reading_value }}</td><td><strong>{{ r.liters_produced }} L</strong></td><td>{{ r.notes or '-' }}</td></tr>{% endfor %}</tbody></table></div></div></div></div>
+
+<!-- Add Meter Reading Modal -->
+<div class="modal fade" id="addReadingModal" tabindex="-1" aria-labelledby="addReadingModalLabel" aria-hidden="true">
+<div class="modal-dialog"><div class="modal-content"><div class="modal-header" style="background:linear-gradient(135deg,#1e40af,#3b82f6);color:white;"><h5 class="modal-title" id="addReadingModalLabel"><i class="bi bi-speedometer"></i> Record Meter Reading</h5><button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button></div>
+<form action="{{ url_for('add_meter_reading') }}" method="POST"><div class="modal-body">
+<div class="mb-3"><label class="form-label"><i class="bi bi-upc-scan"></i> Meter Number *</label><input type="text" name="meter_number" class="form-control" placeholder="e.g., MTR-001" required></div>
+<div class="mb-3"><label class="form-label"><i class="bi bi-gauge"></i> Reading Value *</label><input type="number" step="0.01" name="reading_value" class="form-control" placeholder="Current meter reading" required></div>
+<div class="mb-3"><label class="form-label"><i class="bi bi-droplet"></i> Liters Produced *</label><input type="number" step="0.01" name="liters_produced" class="form-control" placeholder="Liters produced this period" required></div>
+<div class="mb-3"><label class="form-label"><i class="bi bi-journal-text"></i> Notes</label><textarea name="notes" class="form-control" rows="2" placeholder="Any additional notes..."></textarea></div></div>
+<div class="modal-footer"><button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button><button type="submit" class="btn btn-gold"><i class="bi bi-check-circle"></i> Save Reading</button></div></form></div></div></div>
 {% endblock %}
