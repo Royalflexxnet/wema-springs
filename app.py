@@ -649,7 +649,12 @@ def reports_pdf():
     return response
 
 # ---- APP INIT (production safe) ----
+# ---- APP INIT (production safe) ----
 with app.app_context():
+    db.create_all()
+
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
     db.create_all()
     try:
         if not User.query.filter_by(username='admin').first():
