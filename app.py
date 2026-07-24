@@ -1,669 +1,820 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, make_response
-from flask_login import login_user, login_required, logout_user, current_user
-from database import db, login_manager, User, Product, Order, OrderItem, Inventory, MeterReading, PriceHistory, WalkInSale, Expense
-from datetime import datetime, timedelta
-from functools import wraps
-from sqlalchemy import func, or_
 import os
-from io import BytesIO
-from reportlab.lib.pagesizes import A4
+import tempfile
+from datetime import datetime, timedelta
+from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify, send_file
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+import io
 from reportlab.lib import colors
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_CENTER
+import json
+from functools import wraps
+import secrets
 
+# Initialize Flask app
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:////var/data/wema_springs.db')
+app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
+
+# Database Configuration
+# Use PostgreSQL in production, SQLite for local development
+database_url = os.environ.get('DATABASE_URL')
+if database_url:
+    # Render provides DATABASE_URL with 'postgres://' prefix, SQLAlchemy requires 'postgresql://'
+    if database_url.startswith('postgres://'):
+        database_url = database_url.replace('postgres://', 'postgresql://', 1)
+    app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+else:
+    # Fallback to SQLite for local development
+    db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'instance', 'app.db')
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'pool_pre_ping': True,
+    'pool_recycle': 300,
+}
 
-db.init_app(app)
-login_manager.init_app(app)
+# Initialize extensions
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+login_manager.login_message_category = 'info'
 
-def user_has_permission(permission):
-    if not current_user.is_authenticated: return False
-    if current_user.role == 'admin': return True
-    return getattr(current_user, permission, False)
+# ============================================
+# DATABASE MODELS
+# ============================================
 
-def permission_required(permission):
-    def decorator(f):
-        @wraps(f)
-        def decorated_function(*args, **kwargs):
-            if not user_has_permission(permission):
-                flash('Permission denied.', 'danger')
-                return redirect(url_for('admin_dashboard'))
-            return f(*args, **kwargs)
-        return decorated_function
-    return decorator
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password_hash = db.Column(db.String(200), nullable=False)
+    full_name = db.Column(db.String(100), nullable=False)
+    phone_number = db.Column(db.String(20))
+    account_number = db.Column(db.String(10), unique=True, nullable=False)
+    account_balance = db.Column(db.Float, default=0.0)
+    is_admin = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    is_active = db.Column(db.Boolean, default=True)
+    
+    # Relationships
+    transactions_sent = db.relationship('Transaction', foreign_keys='Transaction.sender_id', backref='sender', lazy=True)
+    transactions_received = db.relationship('Transaction', foreign_keys='Transaction.receiver_id', backref='receiver', lazy=True)
+    
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
+    
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+    
+    def __repr__(self):
+        return f'<User {self.username}>'
 
-def staff_required(f):
+class Transaction(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    transaction_id = db.Column(db.String(50), unique=True, nullable=False)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    description = db.Column(db.String(200))
+    transaction_type = db.Column(db.String(20), default='transfer')
+    status = db.Column(db.String(20), default='completed')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    reference = db.Column(db.String(50), unique=True)
+    
+    def __repr__(self):
+        return f'<Transaction {self.transaction_id}>'
+
+class SavingsPlan(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    plan_name = db.Column(db.String(100), nullable=False)
+    target_amount = db.Column(db.Float, nullable=False)
+    current_amount = db.Column(db.Float, default=0.0)
+    start_date = db.Column(db.DateTime, default=datetime.utcnow)
+    end_date = db.Column(db.DateTime)
+    status = db.Column(db.String(20), default='active')
+    interest_rate = db.Column(db.Float, default=0.0)
+    
+    user = db.relationship('User', backref=db.backref('savings_plans', lazy=True))
+    
+    def __repr__(self):
+        return f'<SavingsPlan {self.plan_name}>'
+
+class LoanApplication(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    purpose = db.Column(db.String(200))
+    status = db.Column(db.String(20), default='pending')
+    interest_rate = db.Column(db.Float, default=5.0)
+    tenure_months = db.Column(db.Integer, default=12)
+    approved_date = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    user = db.relationship('User', backref=db.backref('loan_applications', lazy=True))
+    
+    def __repr__(self):
+        return f'<LoanApplication {self.id}>'
+
+class Notification(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    title = db.Column(db.String(100), nullable=False)
+    message = db.Column(db.Text, nullable=False)
+    is_read = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    notification_type = db.Column(db.String(20), default='general')
+    
+    user = db.relationship('User', backref=db.backref('notifications', lazy=True))
+
+# ============================================
+# ADMIN REQUIRED DECORATOR
+# ============================================
+
+def admin_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not current_user.is_authenticated or current_user.role == 'client':
-            flash('Staff access required.', 'danger')
-            return redirect(url_for('login'))
+        if not current_user.is_authenticated or not current_user.is_admin:
+            flash('Access denied. Admin privileges required.', 'danger')
+            return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated_function
 
+# ============================================
+# USER LOADER
+# ============================================
+
+@login_manager.user_loader
+def load_user(user_id):
+    return db.session.get(User, int(user_id))
+
+# ============================================
+# ROUTES
+# ============================================
+
 @app.route('/')
 def index():
-    pure_retail = Product.query.filter_by(category='retail', water_type='pure').limit(4).all()
-    salt_retail = Product.query.filter_by(category='retail', water_type='salt').limit(4).all()
-    pure_wholesale = Product.query.filter_by(category='wholesale', water_type='pure').limit(4).all()
-    salt_wholesale = Product.query.filter_by(category='wholesale', water_type='salt').limit(4).all()
-    return render_template('index.html', pure_retail=pure_retail, salt_retail=salt_retail,
-                           pure_wholesale=pure_wholesale, salt_wholesale=salt_wholesale)
-
-@app.route('/shop/retail')
-def shop_retail():
-    water_type = request.args.get('type', 'pure')
-    products = Product.query.filter_by(category='retail', water_type=water_type).all()
-    return render_template('shop_retail.html', products=products, water_type=water_type)
-
-@app.route('/shop/wholesale')
-def shop_wholesale():
-    water_type = request.args.get('type', 'pure')
-    products = Product.query.filter_by(category='wholesale', water_type=water_type).all()
-    return render_template('shop_wholesale.html', products=products, water_type=water_type)
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    return render_template('index.html')
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
     if request.method == 'POST':
-        phone = request.form.get('phone_number', '').strip()
-        password = request.form.get('password')
-        confirm_password = request.form.get('confirm_password')
-        name = request.form.get('name')
+        username = request.form.get('username')
         email = request.form.get('email')
-        area = request.form.get('area_of_residence')
-        customer_type = request.form.get('customer_type', 'pure')
-        if not phone or not password or not name:
-            flash('Please fill all required fields.', 'danger')
-            return redirect(url_for('register'))
-        if password != confirm_password:
-            flash('Passwords do not match!', 'danger')
-            return redirect(url_for('register'))
-        if User.query.filter_by(phone_number=phone).first():
-            flash('Phone number already registered!', 'danger')
-            return redirect(url_for('login'))
-        user = User(phone_number=phone, name=name, email=email, area_of_residence=area,
-                    role='client', customer_type=customer_type)
+        password = request.form.get('password')
+        full_name = request.form.get('full_name')
+        phone_number = request.form.get('phone_number')
+        
+        # Validation
+        if not all([username, email, password, full_name]):
+            flash('All fields are required', 'danger')
+            return render_template('register.html')
+        
+        # Check if user exists
+        existing_user = User.query.filter((User.username == username) | (User.email == email)).first()
+        if existing_user:
+            flash('Username or email already exists', 'danger')
+            return render_template('register.html')
+        
+        # Generate account number
+        account_number = str(secrets.randbelow(9000000000) + 1000000000)[:10]
+        
+        # Create new user
+        user = User(
+            username=username,
+            email=email,
+            full_name=full_name,
+            phone_number=phone_number,
+            account_number=account_number,
+            account_balance=0.0
+        )
         user.set_password(password)
+        
         db.session.add(user)
         db.session.commit()
-        flash('Registration successful! Please login.', 'success')
+        
+        flash(f'Registration successful! Your account number is: {account_number}', 'success')
         return redirect(url_for('login'))
+    
     return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard'))
+    
     if request.method == 'POST':
-        login_id = request.form.get('login_id', '').strip()
-        password = request.form.get('password', '')
-        if not login_id or not password:
-            flash('Please enter your login details.', 'danger')
-            return render_template('login.html')
-        user = User.query.filter(or_(User.username == login_id, User.phone_number == login_id)).first()
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user = User.query.filter_by(username=username).first()
         if user and user.check_password(password):
             login_user(user)
-            flash(f'Welcome, {user.name}!', 'success')
-            if user.role != 'client':
-                return redirect(url_for('admin_dashboard'))
-            return redirect(url_for('client_dashboard'))
-        flash('Invalid credentials.', 'danger')
+            flash('Login successful!', 'success')
+            next_page = request.args.get('next')
+            return redirect(next_page if next_page else url_for('dashboard'))
+        else:
+            flash('Invalid username or password', 'danger')
+    
     return render_template('login.html')
 
 @app.route('/logout')
 @login_required
 def logout():
     logout_user()
+    flash('You have been logged out', 'info')
     return redirect(url_for('index'))
 
-@app.route('/dashboard/client')
+@app.route('/dashboard')
 @login_required
-def client_dashboard():
-    if current_user.role != 'client':
-        return redirect(url_for('admin_dashboard'))
-    orders = Order.query.filter_by(user_id=current_user.id).order_by(Order.order_date.desc()).all()
-    return render_template('dashboard/client_dashboard.html', orders=orders)
+def dashboard():
+    # Get recent transactions
+    recent_transactions = Transaction.query.filter(
+        (Transaction.sender_id == current_user.id) | 
+        (Transaction.receiver_id == current_user.id)
+    ).order_by(Transaction.created_at.desc()).limit(5).all()
+    
+    # Get savings summary
+    savings_total = db.session.query(db.func.sum(SavingsPlan.current_amount)).filter(
+        SavingsPlan.user_id == current_user.id,
+        SavingsPlan.status == 'active'
+    ).scalar() or 0.0
+    
+    # Get loan summary
+    loan_total = db.session.query(db.func.sum(LoanApplication.amount)).filter(
+        LoanApplication.user_id == current_user.id,
+        LoanApplication.status.in_(['pending', 'approved'])
+    ).scalar() or 0.0
+    
+    # Get notifications
+    notifications = Notification.query.filter_by(
+        user_id=current_user.id,
+        is_read=False
+    ).order_by(Notification.created_at.desc()).limit(5).all()
+    
+    return render_template('dashboard.html',
+                         recent_transactions=recent_transactions,
+                         savings_total=savings_total,
+                         loan_total=loan_total,
+                         notifications=notifications)
 
-@app.route('/place-order', methods=['POST'])
+@app.route('/transfer', methods=['GET', 'POST'])
 @login_required
-def place_order():
-    product_id = request.form.get('product_id')
-    quantity = int(request.form.get('quantity', 1))
-    mpesa_code = request.form.get('mpesa_code', '')
-    delivery_address = request.form.get('delivery_address', current_user.area_of_residence)
-    product = Product.query.get_or_404(product_id)
-    if product.stock_quantity < quantity:
-        flash('Insufficient stock!', 'danger')
-        if product.category == 'retail':
-            return redirect(url_for('shop_retail', type=product.water_type))
-        else:
-            return redirect(url_for('shop_wholesale', type=product.water_type))
-    total = product.price * quantity
-    order = Order(user_id=current_user.id, total_amount=total, mpesa_code=mpesa_code,
-                  payment_status='paid' if mpesa_code else 'pending',
-                  delivery_address=delivery_address, order_type=product.category, source='online')
-    db.session.add(order)
-    db.session.flush()
-    db.session.add(OrderItem(order_id=order.id, product_id=product.id, quantity=quantity, unit_price=product.price))
-    product.stock_quantity -= quantity
-    db.session.add(Inventory(product_id=product.id, stock_out=quantity, current_stock=product.stock_quantity,
-                   recorded_by=current_user.id, notes=f'Order #{order.id}'))
-    db.session.commit()
-    flash(f'Order placed! KES {total:.2f}', 'success')
-    return redirect(url_for('client_dashboard'))
-
-@app.route('/track-order/<int:order_id>')
-@login_required
-def track_order(order_id):
-    order = Order.query.get_or_404(order_id)
-    if order.user_id != current_user.id and current_user.role == 'client':
-        flash('Access denied.', 'danger')
-        return redirect(url_for('client_dashboard'))
-    return render_template('dashboard/track_order.html', order=order)
-
-@app.route('/change-password', methods=['GET', 'POST'])
-@login_required
-def change_password():
+def transfer():
     if request.method == 'POST':
-        old_pw = request.form.get('old_password')
-        new_pw = request.form.get('new_password')
-        confirm_pw = request.form.get('confirm_password')
-        if not current_user.check_password(old_pw):
-            flash('Current password is incorrect.', 'danger')
-        elif new_pw != confirm_pw:
-            flash('New passwords do not match.', 'danger')
-        elif len(new_pw) < 4:
-            flash('Password too short.', 'danger')
-        else:
-            current_user.set_password(new_pw)
+        recipient_account = request.form.get('recipient_account')
+        amount = float(request.form.get('amount', 0))
+        description = request.form.get('description', '')
+        
+        # Validation
+        if amount <= 0:
+            flash('Amount must be greater than 0', 'danger')
+            return render_template('transfer.html')
+        
+        if amount > current_user.account_balance:
+            flash('Insufficient balance', 'danger')
+            return render_template('transfer.html')
+        
+        # Find recipient
+        recipient = User.query.filter_by(account_number=recipient_account).first()
+        if not recipient:
+            flash('Recipient account not found', 'danger')
+            return render_template('transfer.html')
+        
+        if recipient.id == current_user.id:
+            flash('Cannot transfer to your own account', 'danger')
+            return render_template('transfer.html')
+        
+        # Perform transfer
+        transaction_id = f"TXN{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{secrets.randbelow(10000):04d}"
+        reference = f"REF{secrets.token_hex(8).upper()}"
+        
+        try:
+            # Deduct from sender
+            current_user.account_balance -= amount
+            
+            # Add to recipient
+            recipient.account_balance += amount
+            
+            # Create transaction record
+            transaction = Transaction(
+                transaction_id=transaction_id,
+                sender_id=current_user.id,
+                receiver_id=recipient.id,
+                amount=amount,
+                description=description,
+                transaction_type='transfer',
+                reference=reference
+            )
+            
+            db.session.add(transaction)
+            
+            # Create notifications
+            sender_notification = Notification(
+                user_id=current_user.id,
+                title='Transfer Successful',
+                message=f'You sent ₦{amount:,.2f} to {recipient.full_name} ({recipient.account_number})',
+                notification_type='transaction'
+            )
+            
+            receiver_notification = Notification(
+                user_id=recipient.id,
+                title='Funds Received',
+                message=f'You received ₦{amount:,.2f} from {current_user.full_name} ({current_user.account_number})',
+                notification_type='transaction'
+            )
+            
+            db.session.add(sender_notification)
+            db.session.add(receiver_notification)
+            
             db.session.commit()
-            flash('Password updated!', 'success')
-            return redirect(url_for('client_dashboard') if current_user.role == 'client' else url_for('admin_dashboard'))
-    return render_template('change_password.html')
+            
+            flash(f'Transfer successful! ₦{amount:,.2f} sent to {recipient.full_name}', 'success')
+            return redirect(url_for('dashboard'))
+            
+        except Exception as e:
+            db.session.rollback()
+            flash('Transfer failed. Please try again.', 'danger')
+            print(f"Transfer error: {e}")
+    
+    return render_template('transfer.html')
 
-@app.route('/dashboard/admin')
+@app.route('/transactions')
 @login_required
-@staff_required
-def admin_dashboard():
-    if current_user.is_field_marshal:
-        total_orders = Order.query.filter_by(field_marshal_id=current_user.id).count()
-        recent_orders = Order.query.filter_by(field_marshal_id=current_user.id).order_by(Order.order_date.desc()).limit(5).all()
+def transactions():
+    page = request.args.get('page', 1, type=int)
+    per_page = 20
+    
+    transactions = Transaction.query.filter(
+        (Transaction.sender_id == current_user.id) | 
+        (Transaction.receiver_id == current_user.id)
+    ).order_by(Transaction.created_at.desc()).paginate(page=page, per_page=per_page)
+    
+    return render_template('transactions.html', transactions=transactions)
+
+@app.route('/savings', methods=['GET', 'POST'])
+@login_required
+def savings():
+    if request.method == 'POST':
+        plan_name = request.form.get('plan_name')
+        target_amount = float(request.form.get('target_amount', 0))
+        end_date_str = request.form.get('end_date')
+        
+        if not plan_name or target_amount <= 0:
+            flash('Please provide valid plan details', 'danger')
+            return redirect(url_for('savings'))
+        
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d') if end_date_str else None
+        
+        savings_plan = SavingsPlan(
+            user_id=current_user.id,
+            plan_name=plan_name,
+            target_amount=target_amount,
+            end_date=end_date,
+            interest_rate=2.5
+        )
+        
+        db.session.add(savings_plan)
+        db.session.commit()
+        
+        flash(f'Savings plan "{plan_name}" created successfully!', 'success')
+        return redirect(url_for('savings'))
+    
+    plans = SavingsPlan.query.filter_by(user_id=current_user.id).order_by(SavingsPlan.created_at.desc()).all()
+    return render_template('savings.html', plans=plans)
+
+@app.route('/savings/contribute/<int:plan_id>', methods=['POST'])
+@login_required
+def contribute_savings(plan_id):
+    plan = SavingsPlan.query.get_or_404(plan_id)
+    
+    if plan.user_id != current_user.id:
+        flash('Unauthorized access', 'danger')
+        return redirect(url_for('savings'))
+    
+    amount = float(request.form.get('amount', 0))
+    
+    if amount <= 0:
+        flash('Amount must be greater than 0', 'danger')
+        return redirect(url_for('savings'))
+    
+    if amount > current_user.account_balance:
+        flash('Insufficient balance', 'danger')
+        return redirect(url_for('savings'))
+    
+    try:
+        # Deduct from account
+        current_user.account_balance -= amount
+        plan.current_amount += amount
+        
+        if plan.current_amount >= plan.target_amount:
+            plan.status = 'completed'
+        
+        # Create transaction record
+        transaction_id = f"SAV{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{secrets.randbelow(10000):04d}"
+        transaction = Transaction(
+            transaction_id=transaction_id,
+            sender_id=current_user.id,
+            receiver_id=current_user.id,
+            amount=amount,
+            description=f'Savings contribution - {plan.plan_name}',
+            transaction_type='savings'
+        )
+        
+        db.session.add(transaction)
+        db.session.commit()
+        
+        flash(f'Successfully contributed ₦{amount:,.2f} to {plan.plan_name}', 'success')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash('Contribution failed. Please try again.', 'danger')
+        print(f"Savings contribution error: {e}")
+    
+    return redirect(url_for('savings'))
+
+@app.route('/loan', methods=['GET', 'POST'])
+@login_required
+def loan():
+    if request.method == 'POST':
+        amount = float(request.form.get('amount', 0))
+        purpose = request.form.get('purpose')
+        tenure_months = int(request.form.get('tenure_months', 12))
+        
+        if amount <= 0 or not purpose:
+            flash('Please provide valid loan details', 'danger')
+            return redirect(url_for('loan'))
+        
+        # Check if user has pending loans
+        pending_loan = LoanApplication.query.filter_by(
+            user_id=current_user.id,
+            status='pending'
+        ).first()
+        
+        if pending_loan:
+            flash('You have a pending loan application', 'warning')
+            return redirect(url_for('loan'))
+        
+        loan_app = LoanApplication(
+            user_id=current_user.id,
+            amount=amount,
+            purpose=purpose,
+            tenure_months=tenure_months,
+            interest_rate=5.0
+        )
+        
+        db.session.add(loan_app)
+        
+        # Notification for admin (if we had admin, but we'll just log it)
+        notification = Notification(
+            user_id=current_user.id,
+            title='Loan Application Submitted',
+            message=f'Your loan application of ₦{amount:,.2f} has been submitted for review',
+            notification_type='loan'
+        )
+        db.session.add(notification)
+        
+        db.session.commit()
+        
+        flash('Loan application submitted successfully! You will be notified of the decision.', 'success')
+        return redirect(url_for('dashboard'))
+    
+    loans = LoanApplication.query.filter_by(user_id=current_user.id).order_by(LoanApplication.created_at.desc()).all()
+    return render_template('loan.html', loans=loans)
+
+@app.route('/profile', methods=['GET', 'POST'])
+@login_required
+def profile():
+    if request.method == 'POST':
+        current_user.full_name = request.form.get('full_name', current_user.full_name)
+        current_user.phone_number = request.form.get('phone_number', current_user.phone_number)
+        current_user.email = request.form.get('email', current_user.email)
+        
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
+        
+        if new_password:
+            if new_password == confirm_password:
+                current_user.set_password(new_password)
+                flash('Password updated successfully!', 'success')
+            else:
+                flash('Passwords do not match', 'danger')
+                return redirect(url_for('profile'))
+        
+        db.session.commit()
+        flash('Profile updated successfully!', 'success')
+        return redirect(url_for('profile'))
+    
+    return render_template('profile.html')
+
+@app.route('/statement')
+@login_required
+def statement():
+    """Generate statement of account as PDF"""
+    from io import BytesIO
+    
+    start_date = request.args.get('start_date')
+    end_date = request.args.get('end_date')
+    
+    # Default to last 30 days if no dates provided
+    if not start_date and not end_date:
+        end_date = datetime.utcnow()
+        start_date = end_date - timedelta(days=30)
     else:
-        total_orders = Order.query.count()
-        recent_orders = Order.query.order_by(Order.order_date.desc()).limit(5).all()
-    total_walkins = db.session.query(func.sum(WalkInSale.total_amount)).scalar() or 0
-    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.payment_status == 'paid').scalar() or 0
-    total_revenue = online_sales + total_walkins
-    total_customers = User.query.filter_by(role='client').count()
-    total_products = Product.query.count()
-    recent_walkins = WalkInSale.query.order_by(WalkInSale.sale_date.desc()).limit(5).all()
-    low_stock = Product.query.filter(Product.stock_quantity < 10).all()
-    return render_template('dashboard/admin_dashboard.html',
-                         total_orders=total_orders, total_revenue=total_revenue,
-                         total_customers=total_customers, total_products=total_products,
-                         recent_orders=recent_orders, recent_walkins=recent_walkins, low_stock=low_stock)
-
-@app.route('/admin/clients/add', methods=['POST'])
-@login_required
-@staff_required
-def add_client():
-    if not current_user.is_field_marshal and current_user.role != 'admin':
-        flash('Only admins and field marshals can add clients.', 'danger')
-        return redirect(url_for('admin_dashboard'))
-    phone = request.form.get('phone_number', '').strip()
-    name = request.form.get('name')
-    area = request.form.get('area', '')
-    customer_type = request.form.get('customer_type', 'pure')
-    password = request.form.get('password', '1234')
-    if not phone or not name:
-        flash('Phone and name required.', 'danger')
-        return redirect(url_for('manage_customers'))
-    if User.query.filter_by(phone_number=phone).first():
-        flash('Client exists.', 'danger')
-        return redirect(url_for('manage_customers'))
-    client = User(phone_number=phone, name=name, area_of_residence=area, role='client', customer_type=customer_type)
-    client.set_password(password)
-    db.session.add(client)
-    db.session.commit()
-    flash(f'Client {name} added!', 'success')
-    return redirect(url_for('manage_customers'))
-
-@app.route('/admin/clients/delete/<int:user_id>')
-@login_required
-@staff_required
-def delete_client(user_id):
-    if not current_user.is_field_marshal and current_user.role != 'admin':
-        flash('Only admins and field marshals.', 'danger')
-        return redirect(url_for('admin_dashboard'))
-    client = User.query.get_or_404(user_id)
-    if client.role != 'client':
-        flash('Can only delete clients.', 'danger')
-        return redirect(url_for('manage_customers'))
-    db.session.delete(client)
-    db.session.commit()
-    flash('Client removed.', 'success')
-    return redirect(url_for('manage_customers'))
-
-@app.route('/admin/walkin-sale')
-@login_required
-@permission_required('can_record_sales')
-def walkin_sale():
-    products = Product.query.all()
-    today_sales = WalkInSale.query.filter(func.date(WalkInSale.sale_date) == datetime.now().date()).order_by(WalkInSale.sale_date.desc()).all()
-    return render_template('dashboard/walkin_sale.html', products=products, today_sales=today_sales)
-
-@app.route('/admin/walkin-sale/record', methods=['POST'])
-@login_required
-@permission_required('can_record_sales')
-def record_walkin_sale():
-    product_id = request.form.get('product_id')
-    quantity = int(request.form.get('quantity', 1))
-    payment_method = request.form.get('payment_method', 'cash')
-    mpesa_code = request.form.get('mpesa_code', '')
-    customer_name = request.form.get('customer_name', 'Walk-in')
-    product = Product.query.get_or_404(product_id)
-    if product.stock_quantity < quantity:
-        flash('Insufficient stock!', 'danger')
-        return redirect(url_for('walkin_sale'))
-    total = product.price * quantity
-    db.session.add(WalkInSale(product_id=product.id, quantity=quantity, unit_price=product.price,
-                   total_amount=total, payment_method=payment_method,
-                   mpesa_code=mpesa_code if payment_method=='mpesa' else None,
-                   customer_name=customer_name, recorded_by=current_user.id))
-    product.stock_quantity -= quantity
-    db.session.add(Inventory(product_id=product.id, stock_out=quantity, current_stock=product.stock_quantity,
-                   recorded_by=current_user.id, notes='Walk-in sale'))
-    db.session.commit()
-    flash(f'Sale recorded! KES {total:.2f}', 'success')
-    return redirect(url_for('walkin_sale'))
-
-@app.route('/admin/customers')
-@login_required
-@permission_required('can_view_customers')
-def manage_customers():
-    customer_type_filter = request.args.get('type', 'all')
-    if customer_type_filter == 'all':
-        customers = User.query.filter_by(role='client').order_by(User.created_at.desc()).all()
+        start_date = datetime.strptime(start_date, '%Y-%m-%d') if start_date else datetime.utcnow() - timedelta(days=30)
+        end_date = datetime.strptime(end_date, '%Y-%m-%d') if end_date else datetime.utcnow()
+    
+    transactions = Transaction.query.filter(
+        ((Transaction.sender_id == current_user.id) | (Transaction.receiver_id == current_user.id)),
+        Transaction.created_at.between(start_date, end_date)
+    ).order_by(Transaction.created_at).all()
+    
+    # Create PDF
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    elements = []
+    
+    # Title
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        alignment=TA_CENTER,
+        fontSize=24,
+        spaceAfter=30
+    )
+    elements.append(Paragraph('Wema Springs Bank', title_style))
+    elements.append(Paragraph('Statement of Account', styles['Heading2']))
+    elements.append(Spacer(1, 12))
+    
+    # Account Information
+    info_data = [
+        ['Account Holder:', current_user.full_name],
+        ['Account Number:', current_user.account_number],
+        ['Period:', f'{start_date.strftime("%d-%m-%Y")} to {end_date.strftime("%d-%m-%Y")}'],
+        ['Statement Date:', datetime.utcnow().strftime('%d-%m-%Y %H:%M')]
+    ]
+    
+    info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+    info_table.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOLD', (0, 0), (0, -1), True),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 20))
+    
+    # Transactions Table
+    if transactions:
+        table_data = [['Date', 'Description', 'Debit (₦)', 'Credit (₦)', 'Balance']]
+        running_balance = 0
+        
+        # Get initial balance before the start date
+        initial_transactions = Transaction.query.filter(
+            ((Transaction.sender_id == current_user.id) | (Transaction.receiver_id == current_user.id)),
+            Transaction.created_at < start_date
+        ).all()
+        
+        for t in initial_transactions:
+            if t.sender_id == current_user.id:
+                running_balance -= t.amount
+            else:
+                running_balance += t.amount
+        
+        for t in transactions:
+            if t.sender_id == current_user.id:
+                debit = t.amount
+                credit = 0
+                running_balance -= t.amount
+            else:
+                debit = 0
+                credit = t.amount
+                running_balance += t.amount
+            
+            description = t.description or 'Transfer'
+            if t.transaction_type == 'savings':
+                description = f'Savings: {description}'
+            
+            table_data.append([
+                t.created_at.strftime('%d-%m-%Y %H:%M'),
+                description,
+                f'{debit:,.2f}' if debit > 0 else '',
+                f'{credit:,.2f}' if credit > 0 else '',
+                f'{running_balance:,.2f}'
+            ])
+        
+        # Add final balance
+        table_data.append([
+            '',
+            'CLOSING BALANCE',
+            '',
+            '',
+            f'{running_balance:,.2f}'
+        ])
+        
+        transaction_table = Table(table_data, colWidths=[1.5*inch, 2.5*inch, 1.2*inch, 1.2*inch, 1.2*inch])
+        transaction_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (2, 0), (-1, -1), 'RIGHT'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('GRID', (0, 0), (-1, -2), 1, colors.black),
+            ('BOX', (0, 0), (-1, -1), 2, colors.black),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.lightgrey),
+            ('BOLD', (0, -1), (-1, -1), True),
+        ]))
+        elements.append(transaction_table)
     else:
-        customers = User.query.filter_by(role='client', customer_type=customer_type_filter).order_by(User.created_at.desc()).all()
-    return render_template('dashboard/customers.html', customers=customers, current_filter=customer_type_filter)
+        elements.append(Paragraph('No transactions found for this period.', styles['Normal']))
+    
+    # Build PDF
+    doc.build(elements)
+    buffer.seek(0)
+    
+    return send_file(
+        buffer,
+        as_attachment=True,
+        download_name=f'statement_{current_user.account_number}_{start_date.strftime("%Y%m%d")}_{end_date.strftime("%Y%m%d")}.pdf',
+        mimetype='application/pdf'
+    )
 
-@app.route('/admin/customers/view/<int:user_id>')
+@app.route('/api/balance')
 @login_required
-def view_customer(user_id):
-    customer = User.query.get_or_404(user_id)
-    orders = Order.query.filter_by(user_id=user_id).order_by(Order.order_date.desc()).all()
-    return render_template('dashboard/customer_detail.html', customer=customer, orders=orders)
+def api_balance():
+    return jsonify({
+        'balance': current_user.account_balance,
+        'account_number': current_user.account_number,
+        'full_name': current_user.full_name
+    })
+
+@app.route('/api/transactions')
+@login_required
+def api_transactions():
+    limit = request.args.get('limit', 10, type=int)
+    transactions = Transaction.query.filter(
+        (Transaction.sender_id == current_user.id) | 
+        (Transaction.receiver_id == current_user.id)
+    ).order_by(Transaction.created_at.desc()).limit(limit).all()
+    
+    return jsonify([{
+        'id': t.transaction_id,
+        'amount': t.amount,
+        'type': t.transaction_type,
+        'description': t.description,
+        'date': t.created_at.isoformat(),
+        'status': t.status
+    } for t in transactions])
 
 @app.route('/admin/users')
 @login_required
-@permission_required('can_manage_users')
-def manage_users():
-    staff = User.query.filter(User.role != 'client').order_by(User.created_at.desc()).all()
-    return render_template('dashboard/users.html', staff=staff)
+@admin_required
+def admin_users():
+    users = User.query.all()
+    return render_template('admin/users.html', users=users)
 
-@app.route('/admin/users/add', methods=['POST'])
+@app.route('/admin/loans')
 @login_required
-@permission_required('can_manage_users')
-def add_user():
-    role = request.form.get('role', 'cashier')
-    user = User(username=request.form.get('username'), phone_number=request.form.get('phone_number') or None,
-                name=request.form.get('name'), role=role, email=request.form.get('email'),
-                is_field_marshal=(role=='field_marshal'), can_dashboard=True,
-                can_edit_products=bool(request.form.get('can_edit_products')),
-                can_manage_inventory=bool(request.form.get('can_manage_inventory')),
-                can_record_sales=bool(request.form.get('can_record_sales')),
-                can_view_orders=bool(request.form.get('can_view_orders')),
-                can_manage_orders=bool(request.form.get('can_manage_orders')),
-                can_manage_users=bool(request.form.get('can_manage_users')),
-                can_view_reports=bool(request.form.get('can_view_reports')),
-                can_view_customers=bool(request.form.get('can_view_customers')),
-                can_meter_readings=bool(request.form.get('can_meter_readings')))
-    user.set_password(request.form.get('password'))
-    db.session.add(user)
-    db.session.commit()
-    flash(f'Staff {user.name} created!', 'success')
-    return redirect(url_for('manage_users'))
+@admin_required
+def admin_loans():
+    loans = LoanApplication.query.order_by(LoanApplication.created_at.desc()).all()
+    return render_template('admin/loans.html', loans=loans)
 
-@app.route('/admin/users/edit/<int:user_id>', methods=['POST'])
+@app.route('/admin/loan/approve/<int:loan_id>', methods=['POST'])
 @login_required
-@permission_required('can_manage_users')
-def edit_user(user_id):
-    user = User.query.get_or_404(user_id)
-    user.name = request.form.get('name', user.name)
-    user.role = request.form.get('role', user.role)
-    user.email = request.form.get('email', user.email)
-    user.username = request.form.get('username') or user.username
-    user.is_field_marshal = (user.role == 'field_marshal')
-    user.can_edit_products = bool(request.form.get('can_edit_products'))
-    user.can_manage_inventory = bool(request.form.get('can_manage_inventory'))
-    user.can_record_sales = bool(request.form.get('can_record_sales'))
-    user.can_view_orders = bool(request.form.get('can_view_orders'))
-    user.can_manage_orders = bool(request.form.get('can_manage_orders'))
-    user.can_manage_users = bool(request.form.get('can_manage_users'))
-    user.can_view_reports = bool(request.form.get('can_view_reports'))
-    user.can_view_customers = bool(request.form.get('can_view_customers'))
-    user.can_meter_readings = bool(request.form.get('can_meter_readings'))
-    db.session.commit()
-    flash('Staff updated!', 'success')
-    return redirect(url_for('manage_users'))
-
-@app.route('/admin/users/delete/<int:user_id>')
-@login_required
-@permission_required('can_manage_users')
-def delete_user(user_id):
-    if user_id == current_user.id:
-        flash('Cannot delete yourself.', 'danger')
-        return redirect(url_for('manage_users'))
-    db.session.delete(User.query.get_or_404(user_id))
-    db.session.commit()
-    flash('Staff deleted!', 'success')
-    return redirect(url_for('manage_users'))
-
-@app.route('/admin/prices')
-@login_required
-@permission_required('can_edit_products')
-def manage_prices():
-    pure_retail = Product.query.filter_by(category='retail', water_type='pure').all()
-    salt_retail = Product.query.filter_by(category='retail', water_type='salt').all()
-    pure_wholesale = Product.query.filter_by(category='wholesale', water_type='pure').all()
-    salt_wholesale = Product.query.filter_by(category='wholesale', water_type='salt').all()
-    return render_template('dashboard/prices.html', pure_retail=pure_retail, salt_retail=salt_retail,
-                           pure_wholesale=pure_wholesale, salt_wholesale=salt_wholesale)
-
-@app.route('/admin/products/add', methods=['POST'])
-@login_required
-@permission_required('can_edit_products')
-def add_product():
-    category = request.form.get('category')
-    water_type = request.form.get('water_type', 'pure')
-    product = Product(name=request.form.get('name'), category=category, water_type=water_type,
-                      price=float(request.form.get('price', 0)),
-                      wholesale_min_qty=int(request.form.get('wholesale_min_qty', 0)) if category=='wholesale' else 0)
-    db.session.add(product)
-    db.session.flush()
-    if 'image' in request.files and request.files['image'].filename:
-        img = request.files['image']
-        img.save(os.path.join(app.config['UPLOAD_FOLDER'], f"product_{product.id}_{img.filename}"))
-        product.image = f"product_{product.id}_{img.filename}"
-    db.session.commit()
-    flash('Product added!', 'success')
-    return redirect(url_for('manage_prices'))
-
-@app.route('/admin/prices/update', methods=['POST'])
-@login_required
-@permission_required('can_edit_products')
-def update_price():
-    product = Product.query.get_or_404(request.form.get('product_id'))
-    new_price = float(request.form.get('price', 0))
-    new_stock = int(request.form.get('stock_quantity', -1))
-
-    if product.price != new_price:
-        db.session.add(PriceHistory(product_id=product.id, old_price=product.price or 0, new_price=new_price, changed_by=current_user.id))
-
-    product.name = request.form.get('name', product.name)
-    product.category = request.form.get('category', product.category)
-    product.water_type = request.form.get('water_type', product.water_type)
-    product.price = new_price if new_price > 0 else product.price
-
-    if product.category == 'wholesale':
-        product.wholesale_min_qty = int(request.form.get('wholesale_min_qty', product.wholesale_min_qty))
-
-    if new_stock >= 0:
-        old_stock = product.stock_quantity
-        product.stock_quantity = new_stock
-        if new_stock > old_stock:
-            db.session.add(Inventory(product_id=product.id, stock_in=new_stock - old_stock, current_stock=new_stock,
-                           recorded_by=current_user.id, notes='Stock adjusted (increase)'))
-        elif new_stock < old_stock:
-            db.session.add(Inventory(product_id=product.id, stock_out=old_stock - new_stock, current_stock=new_stock,
-                           recorded_by=current_user.id, notes='Stock adjusted (decrease)'))
-
-    if 'image' in request.files and request.files['image'].filename:
-        img = request.files['image']
-        img.save(os.path.join(app.config['UPLOAD_FOLDER'], f"product_{product.id}_{img.filename}"))
-        product.image = f"product_{product.id}_{img.filename}"
-
-    db.session.commit()
-    flash('Product updated!', 'success')
-    return redirect(url_for('manage_prices'))
-
-@app.route('/admin/inventory')
-@login_required
-@permission_required('can_manage_inventory')
-def inventory():
-    products = Product.query.all()
-    records = Inventory.query.order_by(Inventory.date_recorded.desc()).limit(50).all()
-    return render_template('dashboard/inventory.html', products=products, inventory_records=records)
-
-@app.route('/admin/inventory/add-stock', methods=['POST'])
-@login_required
-@permission_required('can_manage_inventory')
-def add_stock():
-    product = Product.query.get_or_404(request.form.get('product_id'))
-    qty = int(request.form.get('quantity'))
-    product.stock_quantity += qty
-    db.session.add(Inventory(product_id=product.id, stock_in=qty, current_stock=product.stock_quantity,
-                   recorded_by=current_user.id, notes=request.form.get('notes', '')))
-    db.session.commit()
-    flash(f'Added {qty} units!', 'success')
-    return redirect(url_for('inventory'))
-
-@app.route('/admin/inventory/edit/<int:record_id>', methods=['POST'])
-@login_required
-@permission_required('can_manage_inventory')
-def edit_inventory(record_id):
-    r = Inventory.query.get_or_404(record_id)
-    p = Product.query.get(r.product_id)
-    oi, oo = r.stock_in, r.stock_out
-    ni, no = int(request.form.get('stock_in',0)), int(request.form.get('stock_out',0))
-    p.stock_quantity = p.stock_quantity - oi + oo + ni - no
-    r.stock_in, r.stock_out, r.current_stock = ni, no, p.stock_quantity
-    r.notes = request.form.get('notes', r.notes)
-    db.session.commit()
-    flash('Updated!', 'success')
-    return redirect(url_for('inventory'))
-
-@app.route('/admin/inventory/delete/<int:record_id>')
-@login_required
-@permission_required('can_manage_inventory')
-def delete_inventory(record_id):
-    r = Inventory.query.get_or_404(record_id)
-    p = Product.query.get(r.product_id)
-    p.stock_quantity = p.stock_quantity - r.stock_in + r.stock_out
-    db.session.delete(r)
-    db.session.commit()
-    flash('Record deleted.', 'success')
-    return redirect(url_for('inventory'))
-
-@app.route('/admin/expenses')
-@login_required
-@permission_required('can_view_reports')
-def manage_expenses():
-    expenses = Expense.query.order_by(Expense.expense_date.desc()).all()
-    total_expenses = db.session.query(func.sum(Expense.amount)).scalar() or 0
-    return render_template('dashboard/expenses.html', expenses=expenses, total_expenses=total_expenses)
-
-@app.route('/admin/expenses/add', methods=['POST'])
-@login_required
-@permission_required('can_view_reports')
-def add_expense():
-    db.session.add(Expense(category=request.form.get('category'),
-                          amount=float(request.form.get('amount')),
-                          description=request.form.get('description'),
-                          recorded_by=current_user.id))
-    db.session.commit()
-    flash('Expense recorded!', 'success')
-    return redirect(url_for('manage_expenses'))
-
-@app.route('/admin/expenses/delete/<int:expense_id>')
-@login_required
-@permission_required('can_view_reports')
-def delete_expense(expense_id):
-    Expense.query.get_or_404(expense_id)
-    db.session.delete(Expense.query.get(expense_id))
-    db.session.commit()
-    flash('Expense deleted.', 'success')
-    return redirect(url_for('manage_expenses'))
-
-@app.route('/admin/meter-readings')
-@login_required
-@permission_required('can_meter_readings')
-def meter_readings():
-    water_type = request.args.get('type', 'pure')
-    readings = MeterReading.query.filter_by(water_type=water_type).order_by(MeterReading.reading_date.desc()).all()
-    return render_template('dashboard/meter_reading.html', readings=readings, water_type=water_type)
-
-@app.route('/admin/meter-readings/add', methods=['POST'])
-@login_required
-@permission_required('can_meter_readings')
-def add_meter_reading():
-    db.session.add(MeterReading(meter_number=request.form.get('meter_number'),
-                                water_type=request.form.get('water_type', 'pure'),
-                                reading_value=float(request.form.get('reading_value')),
-                                liters_produced=float(request.form.get('liters_produced')),
-                                recorded_by=current_user.id, notes=request.form.get('notes', '')))
-    db.session.commit()
-    flash('Reading recorded!', 'success')
-    return redirect(url_for('meter_readings', type=request.form.get('water_type', 'pure')))
-
-@app.route('/admin/orders')
-@login_required
-@permission_required('can_view_orders')
-def manage_orders():
-    if current_user.is_field_marshal:
-        orders = Order.query.filter_by(field_marshal_id=current_user.id).order_by(Order.order_date.desc()).all()
-    else:
-        orders = Order.query.order_by(Order.order_date.desc()).all()
-    return render_template('dashboard/orders.html', orders=orders)
-
-@app.route('/admin/orders/update/<int:order_id>', methods=['POST'])
-@login_required
-@permission_required('can_manage_orders')
-def update_order(order_id):
-    order = Order.query.get_or_404(order_id)
-    order.status = request.form.get('status')
-    if order.status == 'delivered': order.payment_status = 'paid'
-    db.session.commit()
-    flash('Order updated!', 'success')
-    return redirect(url_for('manage_orders'))
-
-@app.route('/admin/field-order')
-@login_required
-def field_order():
-    if not current_user.is_field_marshal and current_user.role != 'admin':
-        flash('Only Field Marshals.', 'danger')
-        return redirect(url_for('admin_dashboard'))
-    products = Product.query.filter(Product.stock_quantity > 0).all()
-    clients = User.query.filter_by(role='client').order_by(User.name).all()
-    my_orders = Order.query.filter_by(field_marshal_id=current_user.id).order_by(Order.order_date.desc()).limit(20).all()
-    return render_template('dashboard/field_order.html', products=products, clients=clients, my_orders=my_orders)
-
-@app.route('/admin/field-order/place', methods=['POST'])
-@login_required
-def place_field_order():
-    if not current_user.is_field_marshal and current_user.role != 'admin':
-        flash('Permission denied.', 'danger')
-        return redirect(url_for('admin_dashboard'))
-    product_id = request.form.get('product_id')
-    quantity = int(request.form.get('quantity',1))
-    client_id = request.form.get('client_id')
-    mpesa_code = request.form.get('mpesa_code','')
-    delivery_address = request.form.get('delivery_address','')
-    product = Product.query.get_or_404(product_id)
-    if product.stock_quantity < quantity:
-        flash('Insufficient stock!', 'danger')
-        return redirect(url_for('field_order'))
-    total = product.price * quantity
-    order = Order(user_id=client_id, field_marshal_id=current_user.id, total_amount=total,
-                  mpesa_code=mpesa_code, payment_status='paid' if mpesa_code else 'pending',
-                  delivery_address=delivery_address, order_type=product.category, source='field_marshal')
-    db.session.add(order)
-    db.session.flush()
-    db.session.add(OrderItem(order_id=order.id, product_id=product.id, quantity=quantity, unit_price=product.price))
-    product.stock_quantity -= quantity
-    db.session.add(Inventory(product_id=product.id, stock_out=quantity, current_stock=product.stock_quantity,
-                   recorded_by=current_user.id, notes=f'Field order #{order.id}'))
-    db.session.commit()
-    flash(f'Order placed! KES {total:.2f}', 'success')
-    return redirect(url_for('field_order'))
-
-@app.route('/admin/reports')
-@login_required
-@permission_required('can_view_reports')
-def reports():
-    start_date = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
-    end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.order_date.between(start_dt, end_dt), Order.payment_status=='paid').scalar() or 0
-    total_walkins = db.session.query(func.sum(WalkInSale.total_amount)).filter(WalkInSale.sale_date.between(start_dt, end_dt)).scalar() or 0
-    total_expenses = db.session.query(func.sum(Expense.amount)).filter(Expense.expense_date.between(start_dt, end_dt)).scalar() or 0
-    pure_produced = db.session.query(func.sum(MeterReading.liters_produced)).filter(MeterReading.water_type=='pure', MeterReading.reading_date.between(start_dt, end_dt)).scalar() or 0
-    salt_produced = db.session.query(func.sum(MeterReading.liters_produced)).filter(MeterReading.water_type=='salt', MeterReading.reading_date.between(start_dt, end_dt)).scalar() or 0
-    total_revenue = online_sales + total_walkins
-    profit = total_revenue - total_expenses
-    total_orders = Order.query.filter(Order.order_date.between(start_dt, end_dt)).count()
-    fm_stats = []
-    for fm in User.query.filter_by(is_field_marshal=True).all():
-        cnt = Order.query.filter_by(field_marshal_id=fm.id).filter(Order.order_date.between(start_dt, end_dt)).count()
-        rev = db.session.query(func.sum(Order.total_amount)).filter_by(field_marshal_id=fm.id).filter(Order.order_date.between(start_dt, end_dt), Order.payment_status=='paid').scalar() or 0
-        fm_stats.append({'name':fm.name,'orders':cnt,'revenue':rev})
-    return render_template('dashboard/reports.html', start_date=start_date, end_date=end_date,
-                         online_sales=online_sales, total_walkins=total_walkins,
-                         total_revenue=total_revenue, total_expenses=total_expenses,
-                         profit=profit, total_orders=total_orders, fm_stats=fm_stats,
-                         pure_produced=pure_produced, salt_produced=salt_produced)
-
-@app.route('/admin/reports/pdf')
-@login_required
-@permission_required('can_view_reports')
-def reports_pdf():
-    start_date = request.args.get('start_date', (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d'))
-    end_date = request.args.get('end_date', datetime.now().strftime('%Y-%m-%d'))
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d') + timedelta(days=1)
-    online_sales = db.session.query(func.sum(Order.total_amount)).filter(Order.order_date.between(start_dt, end_dt), Order.payment_status=='paid').scalar() or 0
-    total_walkins = db.session.query(func.sum(WalkInSale.total_amount)).filter(WalkInSale.sale_date.between(start_dt, end_dt)).scalar() or 0
-    total_expenses = db.session.query(func.sum(Expense.amount)).filter(Expense.expense_date.between(start_dt, end_dt)).scalar() or 0
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=30, leftMargin=30)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph("WEMA SPRINGS - REPORT", styles['Title']), Paragraph(f"{start_date} to {end_date}", styles['Normal']), Spacer(1,20)]
-    sd = [['SUMMARY',''],['Online Sales',f'KES {online_sales:,.2f}'],['Walk-in',f'KES {total_walkins:,.2f}'],['Expenses',f'KES {total_expenses:,.2f}'],['Profit',f'KES {online_sales+total_walkins-total_expenses:,.2f}']]
-    st = Table(sd, colWidths=[200,200])
-    st.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#1e40af')),('TEXTCOLOR',(0,0),(-1,0),colors.white),('SPAN',(0,0),(-1,0)),('GRID',(0,0),(-1,-1),1,colors.black)]))
-    elements.append(st)
-    doc.build(elements)
-    buffer.seek(0)
-    response = make_response(buffer.getvalue())
-    response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = f'attachment; filename=Wema_Report_{start_date}.pdf'
-    return response
-
-# ---- APP INIT (production safe) ----
-with app.app_context():
-    db.create_all()
+@admin_required
+def admin_approve_loan(loan_id):
+    loan = LoanApplication.query.get_or_404(loan_id)
+    
+    if loan.status != 'pending':
+        flash('This loan has already been processed', 'warning')
+        return redirect(url_for('admin_loans'))
+    
     try:
-        if not User.query.filter_by(username='admin').first():
-            admin = User(username='admin', name='Administrator', role='admin',
-                         can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
-                         can_record_sales=True, can_view_orders=True, can_manage_orders=True,
-                         can_manage_users=True, can_view_reports=True, can_view_customers=True,
-                         can_meter_readings=True)
-            admin.set_password('admin123')
-            db.session.add(admin)
-            db.session.commit()
-            print("✅ Admin user created (admin / admin123)")
-        else:
-            print("✅ Admin user already exists")
+        loan.status = 'approved'
+        loan.approved_date = datetime.utcnow()
+        
+        # Credit the user's account
+        user = User.query.get(loan.user_id)
+        user.account_balance += loan.amount
+        
+        # Create notification
+        notification = Notification(
+            user_id=user.id,
+            title='Loan Approved',
+            message=f'Your loan application of ₦{loan.amount:,.2f} has been approved!',
+            notification_type='loan'
+        )
+        db.session.add(notification)
+        
+        db.session.commit()
+        flash(f'Loan approved! {user.full_name} has been credited with ₦{loan.amount:,.2f}', 'success')
+        
     except Exception as e:
         db.session.rollback()
-        print(f"⚠️  Could not create admin: {e}")
+        flash('Failed to approve loan. Please try again.', 'danger')
+        print(f"Loan approval error: {e}")
+    
+    return redirect(url_for('admin_loans'))
+
+@app.route('/admin/loan/reject/<int:loan_id>', methods=['POST'])
+@login_required
+@admin_required
+def admin_reject_loan(loan_id):
+    loan = LoanApplication.query.get_or_404(loan_id)
+    
+    if loan.status != 'pending':
+        flash('This loan has already been processed', 'warning')
+        return redirect(url_for('admin_loans'))
+    
+    try:
+        loan.status = 'rejected'
+        
+        # Create notification
+        notification = Notification(
+            user_id=loan.user_id,
+            title='Loan Application Rejected',
+            message='We regret to inform you that your loan application has been rejected.',
+            notification_type='loan'
+        )
+        db.session.add(notification)
+        
+        db.session.commit()
+        flash('Loan application rejected', 'success')
+        
+    except Exception as e:
+        db.session.rollback()
+        flash('Failed to reject loan. Please try again.', 'danger')
+        print(f"Loan rejection error: {e}")
+    
+    return redirect(url_for('admin_loans'))
+
+# ============================================
+# ERROR HANDLERS
+# ============================================
+
+@app.errorhandler(404)
+def not_found_error(error):
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    db.session.rollback()
+    return render_template('500.html'), 500
+
+# ============================================
+# CONTEXT PROCESSORS
+# ============================================
+
+@app.context_processor
+def utility_processor():
+    def format_currency(amount):
+        return f'₦{amount:,.2f}'
+    
+    def format_datetime(dt):
+        return dt.strftime('%d-%m-%Y %H:%M') if dt else ''
+    
+    return dict(format_currency=format_currency, format_datetime=format_datetime)
+
+# ============================================
+# CREATE TABLES AND ADMIN USER
+# ============================================
+
+with app.app_context():
+    db.create_all()
+    
+    # Create admin user if not exists
+    admin = User.query.filter_by(username='admin').first()
+    if not admin:
+        admin = User(
+            username='admin',
+            email='admin@wemasprings.com',
+            full_name='System Administrator',
+            account_number='0000000001',
+            account_balance=0.0,
+            is_admin=True
+        )
+        admin.set_password('admin123')  # Change this in production!
+        db.session.add(admin)
+        db.session.commit()
+        print('Admin user created!')
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    app.run(debug=False, host='0.0.0.0', port=5000)
