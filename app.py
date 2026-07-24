@@ -15,7 +15,6 @@ from reportlab.lib.styles import getSampleStyleSheet
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
 
-# Database configuration with Supabase PostgreSQL support
 database_url = os.environ.get('DATABASE_URL', 'sqlite:///wema_springs.db')
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -93,7 +92,7 @@ def register():
             return redirect(url_for('login'))
         user = User(phone_number=phone, name=name, email=email, area_of_residence=area,
                     role='client', customer_type=customer_type)
-        user.set_password(password)
+        user.password_hash = generate_password_hash(password, method='pbkdf2:sha256')
         db.session.add(user)
         db.session.commit()
         flash('Registration successful! Please login.', 'success')
@@ -183,7 +182,7 @@ def change_password():
         elif len(new_pw) < 4:
             flash('Password too short.', 'danger')
         else:
-            current_user.set_password(new_pw)
+            current_user.password_hash = generate_password_hash(new_pw, method='pbkdf2:sha256')
             db.session.commit()
             flash('Password updated!', 'success')
             return redirect(url_for('client_dashboard') if current_user.role == 'client' else url_for('admin_dashboard'))
@@ -230,7 +229,7 @@ def add_client():
         flash('Client exists.', 'danger')
         return redirect(url_for('manage_customers'))
     client = User(phone_number=phone, name=name, area_of_residence=area, role='client', customer_type=customer_type)
-    client.set_password(password)
+    client.password_hash = generate_password_hash(password, method='pbkdf2:sha256')
     db.session.add(client)
     db.session.commit()
     flash(f'Client {name} added!', 'success')
@@ -327,7 +326,7 @@ def add_user():
                 can_view_reports=bool(request.form.get('can_view_reports')),
                 can_view_customers=bool(request.form.get('can_view_customers')),
                 can_meter_readings=bool(request.form.get('can_meter_readings')))
-    user.set_password(request.form.get('password'))
+    user.password_hash = generate_password_hash(request.form.get('password'), method='pbkdf2:sha256')
     db.session.add(user)
     db.session.commit()
     flash(f'Staff {user.name} created!', 'success')
@@ -649,32 +648,8 @@ def reports_pdf():
     response.headers['Content-Disposition'] = f'attachment; filename=Wema_Report_{start_date}.pdf'
     return response
 
-# ---- APP INIT (production safe) ----
-# ---- APP INIT (production safe) ----
-with app.app_context():
-    db.create_all()
-    try:
-        admin = User.query.filter_by(username='admin').first()
-        if not admin:
-            admin = User(
-                username='admin',
-                name='Administrator',
-                role='admin',
-                can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
-                can_record_sales=True, can_view_orders=True, can_manage_orders=True,
-                can_manage_users=True, can_view_reports=True, can_view_customers=True,
-                can_meter_readings=True
-            )
-            admin.password_hash = generate_password_hash('admin123')
-            db.session.add(admin)
-            db.session.commit()
-            print("✅ Admin created")
-    except Exception as e:
-        db.session.rollback()
-        print(f"Admin creation skipped: {e}")
 @app.route('/setup-admin')
 def setup_admin():
-    from werkzeug.security import generate_password_hash
     admin = User.query.filter_by(username='admin').first()
     if admin:
         db.session.delete(admin)
@@ -699,5 +674,10 @@ def setup_admin():
     db.session.add(admin)
     db.session.commit()
     return "✅ Admin created! Username: admin | Password: admin123 | <a href='/login'>Login here</a>"
+
+# ---- APP INIT ----
+with app.app_context():
+    db.create_all()
+
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
