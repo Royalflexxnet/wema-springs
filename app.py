@@ -13,7 +13,7 @@ from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///wema_springs.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:////var/data/wema_springs.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
