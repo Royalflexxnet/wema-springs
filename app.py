@@ -630,18 +630,23 @@ def reports_pdf():
     response.headers['Content-Disposition'] = f'attachment; filename=Wema_Report_{start_date}.pdf'
     return response
 
+# Replace the entire with app.app_context() block at the bottom of app.py
 with app.app_context():
-    
     db.create_all()
-    admin = User(username='admin', name='Administrator', role='admin',
-                 can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
-                 can_record_sales=True, can_view_orders=True, can_manage_orders=True,
-                 can_manage_users=True, can_view_reports=True, can_view_customers=True, can_meter_readings=True)
-    admin.set_password('admin123')
-    db.session.add(admin)
-    db.session.commit()
-    print("✅ Admin: admin / admin123")
-    print("✅ System ready.")
+    try:
+        if not User.query.filter_by(username='admin').first():
+            admin = User(username='admin', name='Administrator', role='admin',
+                         can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
+                         can_record_sales=True, can_view_orders=True, can_manage_orders=True,
+                         can_manage_users=True, can_view_reports=True, can_view_customers=True,
+                         can_meter_readings=True)
+            admin.set_password('admin123')
+            db.session.add(admin)
+            db.session.commit()
+            print("✅ Admin created")
+    except Exception as e:
+        db.session.rollback()
+        print(f"Admin already exists or error: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
