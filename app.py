@@ -12,8 +12,8 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'wema-springs-secret-key-2024'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///wema_springs.db'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'sqlite:///wema_springs.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -138,7 +138,10 @@ def place_order():
     product = Product.query.get_or_404(product_id)
     if product.stock_quantity < quantity:
         flash('Insufficient stock!', 'danger')
-        return redirect(request.referrer or url_for('shop_retail'))
+        if product.category == 'retail':
+            return redirect(url_for('shop_retail', type=product.water_type))
+        else:
+            return redirect(url_for('shop_wholesale', type=product.water_type))
     total = product.price * quantity
     order = Order(user_id=current_user.id, total_amount=total, mpesa_code=mpesa_code,
                   payment_status='paid' if mpesa_code else 'pending',
@@ -465,6 +468,18 @@ def edit_inventory(record_id):
     flash('Updated!', 'success')
     return redirect(url_for('inventory'))
 
+@app.route('/admin/inventory/delete/<int:record_id>')
+@login_required
+@permission_required('can_manage_inventory')
+def delete_inventory(record_id):
+    r = Inventory.query.get_or_404(record_id)
+    p = Product.query.get(r.product_id)
+    p.stock_quantity = p.stock_quantity - r.stock_in + r.stock_out
+    db.session.delete(r)
+    db.session.commit()
+    flash('Record deleted.', 'success')
+    return redirect(url_for('inventory'))
+
 @app.route('/admin/expenses')
 @login_required
 @permission_required('can_view_reports')
@@ -630,7 +645,7 @@ def reports_pdf():
     response.headers['Content-Disposition'] = f'attachment; filename=Wema_Report_{start_date}.pdf'
     return response
 
-# Replace the entire with app.app_context() block at the bottom of app.py
+# ---- APP INIT (production safe) ----
 with app.app_context():
     db.create_all()
     try:
@@ -643,10 +658,12 @@ with app.app_context():
             admin.set_password('admin123')
             db.session.add(admin)
             db.session.commit()
-            print("✅ Admin created")
+            print("✅ Admin user created (admin / admin123)")
+        else:
+            print("✅ Admin user already exists")
     except Exception as e:
         db.session.rollback()
-        print(f"Admin already exists or error: {e}")
+        print(f"⚠️  Could not create admin: {e}")
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

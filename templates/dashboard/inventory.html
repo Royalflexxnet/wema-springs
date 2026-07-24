@@ -1,5 +1,27 @@
 {% extends "base.html" %}
 {% block title %}Inventory{% endblock %}
 {% block content %}
-<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar"><nav><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('inventory') }}">Inventory</a></nav></div><div class="col-md-10 py-4"><div class="d-flex justify-content-between"><h2>Inventory</h2><button class="btn btn-gold" data-bs-toggle="modal" data-bs-target="#addStockModal">Add Stock</button></div><table class="table"><thead><tr><th>Product</th><th>Type</th><th>Price</th><th>Stock</th></tr></thead><tbody>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.water_type }}</td><td>KES {{ "%.2f"|format(p.price) }}</td><td>{{ p.stock_quantity }}</td></tr>{% endfor %}</tbody></table></div></div></div>
+<div class="container-fluid"><div class="row"><div class="col-md-2 sidebar"><nav><a class="nav-link" href="{{ url_for('admin_dashboard') }}">Dashboard</a><a class="nav-link active" href="{{ url_for('inventory') }}">Inventory</a></nav></div>
+<div class="col-md-10 py-4"><div class="d-flex justify-content-between mb-4"><h2>Inventory</h2><button class="btn btn-gold" data-bs-toggle="modal" data-bs-target="#addStockModal">Add Stock</button></div>
+
+<!-- Current Stock -->
+<div class="card mb-4"><div class="card-header"><h5>Current Stock Levels</h5></div>
+<div class="card-body"><table class="table"><thead><tr><th>Product</th><th>Type</th><th>Price</th><th>Stock</th><th>Status</th></tr></thead>
+<tbody>{% for p in products %}<tr><td>{{ p.name }}</td><td>{{ p.water_type }}</td><td>KES {{ "%.2f"|format(p.price) }}</td><td><strong>{{ p.stock_quantity }}</strong></td><td><span class="badge bg-{{ 'success' if p.stock_quantity>20 else 'warning' if p.stock_quantity>5 else 'danger' }}">{{ 'Good' if p.stock_quantity>20 else 'Low' if p.stock_quantity>5 else 'Critical' }}</span></td></tr>{% endfor %}</tbody></table></div></div>
+
+<!-- Stock History -->
+<div class="card"><div class="card-header"><h5>Stock History</h5></div>
+<div class="card-body"><table class="table"><thead><tr><th>Date</th><th>Product</th><th>In</th><th>Out</th><th>Balance</th><th>Notes</th><th>Actions</th></tr></thead>
+<tbody>{% for r in inventory_records %}<tr><td>{{ r.date_recorded.strftime('%Y-%m-%d %H:%M') }}</td><td>{{ r.product.name }}</td><td class="text-success">{{ r.stock_in }}</td><td class="text-danger">{{ r.stock_out }}</td><td>{{ r.current_stock }}</td><td>{{ r.notes or '-' }}</td><td>
+  <button class="btn btn-sm btn-primary" data-bs-toggle="modal" data-bs-target="#editInv{{ r.id }}"><i class="bi bi-pencil"></i></button>
+  {% if current_user.role=='admin' %}<a href="{{ url_for('delete_inventory', record_id=r.id) }}" class="btn btn-sm btn-danger" onclick="return confirm('Delete this record?')"><i class="bi bi-trash"></i></a>{% endif %}
+</td></tr>{% endfor %}</tbody></table></div></div></div></div></div>
+
+<!-- Add Stock Modal -->
+<div class="modal fade" id="addStockModal" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header" style="background:#1e40af;color:white;"><h5>Add Stock</h5></div><form action="{{ url_for('add_stock') }}" method="POST"><div class="modal-body"><div class="mb-3"><label>Product</label><select name="product_id" class="form-control">{% for p in products %}<option value="{{ p.id }}">{{ p.name }}</option>{% endfor %}</select></div><div class="mb-3"><label>Quantity</label><input type="number" name="quantity" class="form-control" min="1" required></div><div class="mb-3"><label>Notes</label><textarea name="notes" class="form-control"></textarea></div></div><div class="modal-footer"><button type="submit" class="btn btn-gold">Add Stock</button></div></form></div></div></div>
+
+{% for r in inventory_records %}
+<!-- Edit Inventory Record Modal -->
+<div class="modal fade" id="editInv{{ r.id }}" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header" style="background:#1e40af;color:white;"><h5>Edit Record #{{ r.id }}</h5></div><form action="{{ url_for('edit_inventory', record_id=r.id) }}" method="POST"><div class="modal-body"><div class="mb-3"><label>Product</label><input type="text" class="form-control" value="{{ r.product.name }}" disabled></div><div class="mb-3"><label>Stock In</label><input type="number" name="stock_in" class="form-control" value="{{ r.stock_in }}"></div><div class="mb-3"><label>Stock Out</label><input type="number" name="stock_out" class="form-control" value="{{ r.stock_out }}"></div><div class="mb-3"><label>Current Balance: {{ r.current_stock }}</label></div><div class="mb-3"><label>Notes</label><textarea name="notes" class="form-control">{{ r.notes or '' }}</textarea></div></div><div class="modal-footer"><button type="submit" class="btn btn-gold">Save Changes</button></div></form></div></div></div>
+{% endfor %}
 {% endblock %}
