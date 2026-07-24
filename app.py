@@ -15,7 +15,10 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key-change-me')
 
 # Database configuration with Supabase PostgreSQL support
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///wema_springs.db'
+database_url = os.environ.get('DATABASE_URL', 'sqlite:///wema_springs.db')
+if database_url and database_url.startswith('postgres://'):
+    database_url = database_url.replace('postgres://', 'postgresql://', 1)
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['UPLOAD_FOLDER'] = 'static/uploads'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
