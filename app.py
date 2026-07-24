@@ -1,6 +1,7 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, make_response
 from flask_login import login_user, login_required, logout_user, current_user
 from database import db, login_manager, User, Product, Order, OrderItem, Inventory, MeterReading, PriceHistory, WalkInSale, Expense
+from werkzeug.security import generate_password_hash
 from datetime import datetime, timedelta
 from functools import wraps
 from sqlalchemy import func, or_
@@ -652,26 +653,25 @@ def reports_pdf():
 # ---- APP INIT (production safe) ----
 with app.app_context():
     db.create_all()
-
-if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-    db.create_all()
     try:
-        if not User.query.filter_by(username='admin').first():
-            admin = User(username='admin', name='Administrator', role='admin',
-                         can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
-                         can_record_sales=True, can_view_orders=True, can_manage_orders=True,
-                         can_manage_users=True, can_view_reports=True, can_view_customers=True,
-                         can_meter_readings=True)
-            admin.set_password('admin123')
+        admin = User.query.filter_by(username='admin').first()
+        if not admin:
+            admin = User(
+                username='admin',
+                name='Administrator',
+                role='admin',
+                can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
+                can_record_sales=True, can_view_orders=True, can_manage_orders=True,
+                can_manage_users=True, can_view_reports=True, can_view_customers=True,
+                can_meter_readings=True
+            )
+            admin.password_hash = generate_password_hash('admin123')
             db.session.add(admin)
             db.session.commit()
-            print("✅ Admin user created (admin / admin123)")
-        else:
-            print("✅ Admin user already exists")
+            print("✅ Admin created")
     except Exception as e:
         db.session.rollback()
-        print(f"⚠️  Could not create admin: {e}")
+        print(f"Admin creation skipped: {e}")
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
