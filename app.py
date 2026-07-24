@@ -631,7 +631,7 @@ def reports_pdf():
     return response
 
 with app.app_context():
-    db.drop_all()
+    
     db.create_all()
     admin = User(username='admin', name='Administrator', role='admin',
                  can_dashboard=True, can_edit_products=True, can_manage_inventory=True,
