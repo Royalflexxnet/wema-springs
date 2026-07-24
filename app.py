@@ -672,6 +672,32 @@ with app.app_context():
     except Exception as e:
         db.session.rollback()
         print(f"Admin creation skipped: {e}")
-
+@app.route('/setup-admin')
+def setup_admin():
+    from werkzeug.security import generate_password_hash
+    admin = User.query.filter_by(username='admin').first()
+    if admin:
+        db.session.delete(admin)
+        db.session.commit()
+    
+    admin = User(
+        username='admin',
+        name='Administrator',
+        role='admin',
+        can_dashboard=True,
+        can_edit_products=True,
+        can_manage_inventory=True,
+        can_record_sales=True,
+        can_view_orders=True,
+        can_manage_orders=True,
+        can_manage_users=True,
+        can_view_reports=True,
+        can_view_customers=True,
+        can_meter_readings=True
+    )
+    admin.password_hash = generate_password_hash('admin123', method='pbkdf2:sha256')
+    db.session.add(admin)
+    db.session.commit()
+    return "✅ Admin created! Username: admin | Password: admin123 | <a href='/login'>Login here</a>"
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
